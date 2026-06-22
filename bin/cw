@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+#
+# cw — launch the containerized Claude workflow for ONE ribose project.
+#
+# Usage:
+#   cd ribose/<org>/<repo> && cw ["task description"]   # derive repo from $PWD
+#   cw <org>/<repo> ["task description"]                 # explicit repo
+#
+# Everything under /work is read-only inside the container EXCEPT the target
+# repo and its worktrees dir, which are overlaid read-write below. This confines
+# all writes to the single project being worked on.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+COMPOSE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"      # .../ribose/claude-container
+RIBOSE_ROOT="$(cd "${COMPOSE_DIR}/.." && pwd)"     # .../ribose
+COMPOSE_FILE="${COMPOSE_DIR}/compose.yml"
+
+die() { echo "cw: $*" >&2; exit 1; }
+
+# --- resolve the target repo (org/repo) -------------------------------------
+target=""
+if [[ $# -ge 1 && "$1" == */* && -d "${RIBOSE_ROOT}/$1" ]]; then
+  target="$1"; shift
+elif [[ "${PWD}/" == "${RIBOSE_ROOT}/"* ]]; then
+  rel="${PWD#"${RIBOSE_ROOT}"/}"
+  target="$(printf '%s' "$rel" | cut -d/ -f1-2)"
+else
+  die "run from inside a ribose project dir, or pass <org>/<repo> explicitly.
+     e.g.  cd ${RIBOSE_ROOT}/relaton/relaton-bib && cw \"add retry logic\""
+fi
+
+org="${target%%/*}"
+repo="${target#*/}"
+[[ -n "$org" && -n "$repo" && "$org" != "$target" ]] \
+  || die "could not resolve <org>/<repo> from '${target}'."
+[[ "$org" != "claude-container" ]] \
+  || die "claude-container is the tooling dir, not a project to work on."
+[[ -d "${RIBOSE_ROOT}/${target}/.git" || -f "${RIBOSE_ROOT}/${target}/.git" ]] \
+  || die "${target} is not a git repo (${RIBOSE_ROOT}/${target})."
+
+task="$*"
+
+# Worktrees live beside the org dir; create the host dir so the RW bind mount
+# has something to attach to (avoids a root-owned auto-created mountpoint).
+mkdir -p "${RIBOSE_ROOT}/${org}/.worktrees"
+
+# --- assemble the claude command --------------------------------------------
+cmd=(claude --dangerously-skip-permissions)
+if [[ -n "$task" ]]; then
+  cmd+=("/feature ${task}")
+fi
+
+echo "cw: project=${target}  (writes confined to this repo + its worktrees)" >&2
+[[ -n "$task" ]] && echo "cw: task=${task}" >&2
+
+exec docker compose -f "${COMPOSE_FILE}" run --rm \
+  -w "/work/${target}" \
+  -v "${RIBOSE_ROOT}/${target}:/work/${target}" \
+  -v "${RIBOSE_ROOT}/${org}/.worktrees:/work/${org}/.worktrees" \
+  dev "${cmd[@]}"

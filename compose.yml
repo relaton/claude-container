@@ -1,0 +1,49 @@
+# Docker Compose for the containerized Claude workflow.
+#
+# `/work` is the whole ribose/ tree mounted READ-ONLY (for cross-project context).
+# The `cw` launcher overlays READ-WRITE mounts on just the target repo and its
+# worktrees dir, so writes are physically confined to the project being worked on.
+#
+# Run via the `bin/cw` launcher (recommended). Raw equivalent is in README.md.
+
+services:
+  dev:
+    build:
+      context: .
+      args:
+        # Override at build time to match your host user if needed:
+        #   docker compose build --build-arg HOST_UID=$(id -u) --build-arg HOST_GID=$(id -g)
+        HOST_UID: "${HOST_UID:-1000}"
+        HOST_GID: "${HOST_GID:-1000}"
+    image: ribose-claude-container
+    working_dir: /work
+    tty: true
+    stdin_open: true
+    volumes:
+      # All repos, read-only — context for related projects.
+      - ../:/work:ro
+      # Host auth/config (file-based on macOS → mounts cleanly).
+      - ${HOME}/.config/gh:/home/dev/.config/gh
+      - ${HOME}/.gitconfig:/home/dev/.gitconfig:ro
+      # Persist Claude Code login across ephemeral runs.
+      - claude-home:/home/dev/.claude
+    environment:
+      # Private gem auth (GitHub Packages) — already exported on the host.
+      - BUNDLE_RUBYGEMS__PKG__GITHUB__COM
+      # Optional auth fallbacks (see .env.example).
+      - ANTHROPIC_API_KEY
+      - CLAUDE_CODE_OAUTH_TOKEN
+      - GH_TOKEN
+      # Forward the host terminal's identity so Claude emits tab title/status
+      # updates and truecolor. Without these the container sees TERM=dumb and
+      # suppresses the OSC title sequences iTerm2 shows on its tabs. Bare
+      # passthrough → taken from the shell running `cw` (unset host = no-op).
+      - TERM
+      - TERM_PROGRAM
+      - TERM_PROGRAM_VERSION
+      - LC_TERMINAL
+      - LC_TERMINAL_VERSION
+      - COLORTERM
+
+volumes:
+  claude-home:
