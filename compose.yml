@@ -24,7 +24,9 @@ services:
       - ../:/work:ro
       # Host auth/config (file-based on macOS → mounts cleanly).
       - ${HOME}/.config/gh:/home/dev/.config/gh
-      - ${HOME}/.gitconfig:/home/dev/.gitconfig:ro
+      # Host gitconfig at a side path; the entrypoint builds a writable ~/.gitconfig
+      # that `include`s it and adds container-only auth (SSH→HTTPS, credential helper).
+      - ${HOME}/.gitconfig:/home/dev/.gitconfig.host:ro
       # Persist Claude Code login across ephemeral runs.
       - claude-home:/home/dev/.claude
     environment:

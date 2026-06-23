@@ -1,8 +1,24 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Mounted repos are owned by a foreign uid; allow git to operate on them.
-git config --global --add safe.directory '*' 2>/dev/null || true
+# Build a writable global git config (the host's is mounted read-only at
+# ~/.gitconfig.host). It inherits the host identity via include, then adds the
+# container-only bits:
+#   - safe.directory '*'   : mounted repos are owned by a foreign uid.
+#   - url insteadOf        : the repos use SSH remotes (git@github.com:) but the
+#                            container has no SSH key — route them over HTTPS.
+#   - credential helper    : feed GH_TOKEN (set by `cw` from `gh auth token`) as the
+#                            HTTPS password so `git push` authenticates.
+cat > "${HOME}/.gitconfig" <<'EOF'
+[include]
+	path = /home/dev/.gitconfig.host
+[safe]
+	directory = *
+[url "https://github.com/"]
+	insteadOf = git@github.com:
+[credential "https://github.com"]
+	helper = "!f() { echo username=x-access-token; echo password=$GH_TOKEN; }; f"
+EOF
 
 # Re-seed the baked skill + settings in case a named volume mounted over
 # ~/.claude hid them (the volume wins over the image layer on first run).

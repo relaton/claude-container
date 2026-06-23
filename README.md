@@ -37,8 +37,11 @@ docker compose run --rm dev claude login
 cp .env.example .env && $EDITOR .env
 ```
 
-`gh` and git just work via the mounted `~/.config/gh` and `~/.gitconfig`. Private gems use the
-host's `BUNDLE_RUBYGEMS__PKG__GITHUB__COM`.
+`gh` and git work via the mounted `~/.config/gh` and `~/.gitconfig`. For **pushing**, `cw` also
+passes the host's GitHub token (via `gh auth token`, so it works even when the host keeps it in
+the macOS keyring) as `GH_TOKEN`, and the container routes GitHub SSH remotes (`git@github.com:`)
+over HTTPS using that token — so `git push` works without SSH keys in the container. Private gems
+use the host's `BUNDLE_RUBYGEMS__PKG__GITHUB__COM`.
 
 ## Everyday use
 

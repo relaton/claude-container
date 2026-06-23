@@ -42,6 +42,12 @@ repo="${target#*/}"
 
 task="$*"
 
+# GitHub auth for the container: the host stores its gh token in the macOS keyring
+# (not in the mounted ~/.config/gh), so pull it out and pass it as GH_TOKEN, which
+# compose forwards. The container's git is configured to use it for HTTPS pushes.
+export GH_TOKEN="${GH_TOKEN:-$(gh auth token 2>/dev/null || true)}"
+[[ -z "${GH_TOKEN}" ]] && echo "cw: warning — no GH_TOKEN (run 'gh auth login'); pushes will fail." >&2
+
 # --- assemble the claude command --------------------------------------------
 # Start in PLAN mode (harness-enforced: Claude cannot edit until you approve a
 # plan) so it can never start coding before discussing the plan. Pair it with
