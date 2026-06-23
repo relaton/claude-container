@@ -7,8 +7,8 @@
 #   cw <org>/<repo> ["task description"]                 # explicit repo
 #
 # Everything under /work is read-only inside the container EXCEPT the target
-# repo and its worktrees dir, which are overlaid read-write below. This confines
-# all writes to the single project being worked on.
+# repo, which is overlaid read-write below. Worktrees are created inside it at
+# .claude/worktrees/<slug>, so all writes stay confined to the single project.
 
 set -euo pipefail
 
@@ -42,21 +42,24 @@ repo="${target#*/}"
 
 task="$*"
 
-# Worktrees live beside the org dir; create the host dir so the RW bind mount
-# has something to attach to (avoids a root-owned auto-created mountpoint).
-mkdir -p "${RIBOSE_ROOT}/${org}/.worktrees"
-
 # --- assemble the claude command --------------------------------------------
-cmd=(claude --dangerously-skip-permissions)
+# Start in PLAN mode (harness-enforced: Claude cannot edit until you approve a
+# plan) so it can never start coding before discussing the plan. Pair it with
+# --allow-dangerously-skip-permissions so that, after you approve, you can run
+# the implementation autonomously without per-edit prompts (approve the plan with
+# "accept edits", or Shift+Tab to the bypass mode it adds to the cycle).
+cmd=(claude --permission-mode plan --allow-dangerously-skip-permissions)
 if [[ -n "$task" ]]; then
   cmd+=("/feature ${task}")
 fi
 
-echo "cw: project=${target}  (writes confined to this repo + its worktrees)" >&2
+echo "cw: project=${target}  (writes confined to this repo, incl. its .claude/worktrees)" >&2
 [[ -n "$task" ]] && echo "cw: task=${task}" >&2
 
+# Only the target repo is mounted read-write. Worktrees live inside it at
+# .claude/worktrees/<slug>, so they need no separate mount — they ride the repo's
+# RW bind mount, which also keeps all writes physically confined to this project.
 exec docker compose -f "${COMPOSE_FILE}" run --rm \
   -w "/work/${target}" \
   -v "${RIBOSE_ROOT}/${target}:/work/${target}" \
-  -v "${RIBOSE_ROOT}/${org}/.worktrees:/work/${org}/.worktrees" \
   dev "${cmd[@]}"

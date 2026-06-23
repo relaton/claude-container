@@ -7,24 +7,30 @@ git config --global --add safe.directory '*' 2>/dev/null || true
 # Re-seed the baked skill + settings in case a named volume mounted over
 # ~/.claude hid them (the volume wins over the image layer on first run).
 mkdir -p "${HOME}/.claude/commands"
-if [ ! -f "${HOME}/.claude/commands/feature.md" ] && [ -f /opt/claude-skill/commands/feature.md ]; then
+# Always overwrite the baked skill command: it's image-managed tooling, so it must
+# track the image, not whatever stale copy a persistent ~/.claude volume still holds.
+if [ -f /opt/claude-skill/commands/feature.md ]; then
   cp /opt/claude-skill/commands/feature.md "${HOME}/.claude/commands/feature.md"
 fi
 if [ ! -f "${HOME}/.claude/settings.json" ] && [ -f /opt/claude-skill/settings.json ]; then
   cp /opt/claude-skill/settings.json "${HOME}/.claude/settings.json"
 fi
 
-# Mark first-run onboarding complete so interactive `claude` doesn't show the
-# theme/login flow ("open browser to auth") on every ephemeral `run --rm`.
-# Auth itself comes from CLAUDE_CODE_OAUTH_TOKEN / ANTHROPIC_API_KEY in the env;
-# ~/.claude.json (a sibling FILE of the persisted ~/.claude dir) isn't persisted,
-# so it's absent each run and must be re-seeded here.
+# Seed ~/.claude.json on every run. It's a sibling FILE of the persisted
+# ~/.claude dir, so it is NOT persisted — it's absent each ephemeral `run --rm`
+# and Claude would otherwise re-prompt. We set two things:
+#   - hasCompletedOnboarding: skips the theme/login flow ("open browser to auth").
+#     Auth itself comes from CLAUDE_CODE_OAUTH_TOKEN / ANTHROPIC_API_KEY.
+#   - per-project hasTrustDialogAccepted for the working dir: skips the
+#     "Is this a folder you trust?" prompt for the repo `cw` launched us in
+#     (cw sets the container workdir to /work/<org>/<repo>).
 CLAUDE_JSON="${HOME}/.claude.json"
-if [ -f "$CLAUDE_JSON" ]; then
-  tmp="$(mktemp)" && jq '.hasCompletedOnboarding = true' "$CLAUDE_JSON" > "$tmp" \
-    && mv "$tmp" "$CLAUDE_JSON" || true
-else
-  echo '{"hasCompletedOnboarding": true}' > "$CLAUDE_JSON"
-fi
+WORK_DIR="$(pwd)"
+[ -f "$CLAUDE_JSON" ] || echo '{}' > "$CLAUDE_JSON"
+tmp="$(mktemp)" && jq --arg dir "$WORK_DIR" '
+  .hasCompletedOnboarding = true
+  | .projects = (.projects // {})
+  | .projects[$dir] = ((.projects[$dir] // {}) + {hasTrustDialogAccepted: true})
+' "$CLAUDE_JSON" > "$tmp" && mv "$tmp" "$CLAUDE_JSON" || true
 
 exec "$@"

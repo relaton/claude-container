@@ -1,8 +1,8 @@
 # Docker Compose for the containerized Claude workflow.
 #
 # `/work` is the whole ribose/ tree mounted READ-ONLY (for cross-project context).
-# The `cw` launcher overlays READ-WRITE mounts on just the target repo and its
-# worktrees dir, so writes are physically confined to the project being worked on.
+# The `cw` launcher overlays a READ-WRITE mount on just the target repo; worktrees
+# live inside it (.claude/worktrees/), so writes are confined to that one project.
 #
 # Run via the `bin/cw` launcher (recommended). Raw equivalent is in README.md.
 
