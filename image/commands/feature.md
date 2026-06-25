@@ -8,21 +8,26 @@ You are running inside an isolated container, started with full tool access
 
 > $ARGUMENTS
 
-**DO NOT COMMIT.** Do not run `git commit` (or `git add`, `git push`, `git merge`, `gh pr create`,
-`gh pr merge`) at any point. Implement, test, and review the work, then **stop** and leave the
-changes uncommitted for the user. Committing is the user's job, not yours — never do it, not even
-if it seems like the obvious final step.
+**DO NOT COMMIT — unless the user explicitly tells you to.** By default, do not run `git commit`
+(or `git add`, `git push`, `git merge`, `gh pr create`, `gh pr merge`) at any point. Implement,
+test, and review the work, then **stop** and leave the changes uncommitted for the user. Committing
+is the user's job, not yours — do not do it on your own initiative, not even if it seems like the
+obvious final step. **The only exception is an explicit, unambiguous instruction from the user**
+(e.g. "commit this", "commit and push", "open a PR") — then you may run exactly the git/`gh` action
+they asked for, and nothing more.
 
 ## Hard rules (read first)
 
 - **Single-project boundary.** The current repo (your working directory) is the ONLY thing
   you may modify. Everything else under `/work` is mounted **read-only** — you may read
   related projects for context, but any write to them will fail. **Never** try to edit them.
-- **You stop when the work is done — you never finalize it.** Your job ends at Step 7: implement,
-  test, review, then show the user the diff and stop. **Never `git commit`, `git add`, `git push`,
-  `git merge`, `gh pr create`, or `gh pr merge`.** Leave the changes as uncommitted working-tree
-  edits on the chosen branch/worktree. The user reviews them and decides what to commit, merge, or
-  open a PR for — that is entirely their call, in their own session or by hand.
+- **You stop when the work is done — you do not finalize it on your own.** Your job ends at Step 7:
+  implement, test, review, then show the user the diff and stop. **Do not `git commit`, `git add`,
+  `git push`, `git merge`, `gh pr create`, or `gh pr merge` on your own initiative** — leave the
+  changes as uncommitted working-tree edits on the chosen branch/worktree. The user reviews them and
+  decides what to commit, merge, or open a PR for — that is their call, in their own session or by
+  hand. **If the user explicitly asks you to commit, push, merge, or open a PR, do it** — perform
+  exactly the action requested, then stop.
 - **Mandatory human gates** — you MUST stop and use `AskUserQuestion` (or wait for an explicit
   user reply) at each of these, and never skip them:
   1. plan confirmation, 2. isolation choice (worktree/branch).
@@ -110,10 +115,11 @@ If the change warrants it, update **this repo's** `CLAUDE.md` (new conventions, 
 build/test commands, architecture notes) and, following the repo's existing convention, its
 `README` / `CHANGELOG`. If nothing needs documenting, skip silently — do not manufacture churn.
 
-### 7. Hand back — show the diff, then stop (no commit, no PR)
-This is where you finish. **Do not commit, push, merge, or open a PR.** Leave every change as
-uncommitted working-tree edits on the branch/worktree from Step 2. Present a clear summary so the
-user can review and decide what to do next:
+### 7. Hand back — show the diff, then stop (no commit, no PR by default)
+This is where you finish. **By default, do not commit, push, merge, or open a PR** — leave every
+change as uncommitted working-tree edits on the branch/worktree from Step 2. (The sole exception is
+an explicit user instruction to commit/push/merge/open a PR — then do exactly that and stop.)
+Present a clear summary so the user can review and decide what to do next:
 - the **working branch** and whether a **worktree** was created;
 - if a worktree was used, its **host path** (`.claude/worktrees/<branch>`) so the user can open the
   files directly on their machine;
@@ -122,9 +128,10 @@ user can review and decide what to do next:
 - the **test result** (and rubocop, if run);
 - any **cross-project hand-off** files written in Step 8.
 
-Then stop and let the user take it from here — they will commit / merge / open a PR themselves when
-and how they choose. Do not ask "should I commit?" or offer to do it; handing back the reviewed,
-uncommitted changes is the end of your job.
+Then stop and let the user take it from here — by default they will commit / merge / open a PR
+themselves when and how they choose. Do not ask "should I commit?" or offer to do it; handing back
+the reviewed, uncommitted changes is the end of your job — **unless** the user explicitly tells you
+to commit / push / merge / open a PR, in which case carry out exactly that request and then stop.
 
 ### 8. Cross-project hand-off (only if needed)
 If the task requires changes in a related project (e.g. this repo needs a new method in another
