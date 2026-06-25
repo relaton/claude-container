@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+#
+# mkworktree <slug> [branch] — create an isolated git worktree that is reachable
+# from BOTH the container and the host.
+#
+# Why a helper instead of a raw `git worktree add`:
+#   The container ships git 2.39 (no `--relative-paths`). A plain `git worktree
+#   add` bakes the container's ABSOLUTE path (/work/...) into the worktree's .git
+#   link, so on the host (where the repo lives at /Users/...) `git status` inside
+#   it fails with "not a git repository: /work/...". This script creates the
+#   worktree under the repo's own .claude/worktrees/ (so it rides the repo's
+#   read-write bind mount and is physically present on the host) and rewrites the
+#   forward .git link to a RELATIVE path, making it usable from either side.
+#
+# Result: ribose/<org>/<repo>/.claude/worktrees/<slug>  — review it from the host.
+
+set -euo pipefail
+
+slug="${1:?usage: mkworktree <slug> [branch]}"
+branch="${2:-claude/${slug}}"
+
+# Resolve the MAIN repo root even if we're invoked from a subdir: the common git
+# dir is <root>/.git, so its parent is the repo root. (--path-format is git 2.31+.)
+main_root="$(cd "$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")" && pwd)"
+cd "$main_root"
+
+# Keep the worktrees dir from ever showing as untracked or getting committed.
+# Uses .git/info/exclude (local-only) — does NOT touch the repo's tracked .gitignore.
+exclude="$(git rev-parse --git-path info/exclude)"
+mkdir -p "$(dirname "$exclude")"
+grep -qxF '/.claude/worktrees/' "$exclude" 2>/dev/null \
+  || echo '/.claude/worktrees/' >> "$exclude"
+
+git worktree add ".claude/worktrees/${slug}" -b "${branch}"
+
+# Relativize ONLY the worktree's forward .git link (it sits exactly 3 levels below
+# the repo root). Leave the repo-side backlink (.git/worktrees/<slug>/gitdir)
+# absolute so the container's git 2.39 worktree admin (list/remove/prune) keeps
+# working. Net effect: status/diff/commit work from the container AND the host.
+printf 'gitdir: ../../../.git/worktrees/%s\n' "${slug}" > ".claude/worktrees/${slug}/.git"
+
+echo "mkworktree: created .claude/worktrees/${slug}  (branch ${branch})"
+echo "mkworktree: host path -> <repo>/.claude/worktrees/${slug}"
+echo "mkworktree: next -> cd .claude/worktrees/${slug}"

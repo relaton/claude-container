@@ -5,8 +5,9 @@ A Docker container that runs **Claude Code** to work on **one** of the sibling p
 
 > **plan** → adjust & confirm → **implement** in an isolated git worktree (TDD, full access,
 > no questions) → **run tests** → **review** → update **CLAUDE.md/docs** if needed →
-> **commit** (message reviewed) → open **PR** (body reviewed) → **remove worktree** (confirm)
-> → **remove branch** (confirm).
+> **review the diff** (you approve) → **commit** (message reviewed) → **finalize: merge _or_
+> open a PR** (your choice, body reviewed) → **remove worktree** (confirm) → **remove branch**
+> (confirm).
 
 Writes are physically confined to the chosen repo: the whole `ribose/` tree is mounted
 **read-only** for context, and only the target repo is overlaid read-write (worktrees live
@@ -54,8 +55,9 @@ cw "add retry logic to the HTTP client"
 
 `cw` derives `<org>/<repo>` from the current directory, launches an interactive Claude session
 (with full tool access), and auto-invokes the `/feature` workflow with your task. Stay attached
-to the terminal — the workflow pauses for you at the plan, commit-message, PR-body, and the two
-cleanup confirmations.
+to the terminal — the workflow pauses for you at the plan, isolation choice, the change/diff
+review, the commit message, the finalize choice (merge or PR) plus PR-body, and the two cleanup
+confirmations.
 
 Other forms:
 
@@ -86,7 +88,8 @@ docker compose -f compose.yml run --rm \
 
 ### Worktrees
 
-When you choose isolation, the workflow creates the branch in a worktree **inside the repo**:
+Right after you approve the plan, the workflow **asks** whether to isolate the work. If you pick
+an isolated worktree, it creates the branch in a worktree **inside the repo**:
 
 ```
 ribose/<org>/<repo>/.claude/worktrees/<branch>/
@@ -98,11 +101,14 @@ worktree rides its read-write mount — no separate mount needed.
 
 **Host compatibility.** The container mounts the repo at `/work/...` but on the host it's at
 `/Users/.../ribose/...`. Git normally bakes an absolute path into a worktree's `.git` link, which
-would make host-side `git status` fail (`not a git repository: /work/...`). So the workflow
-rewrites that link to a **relative** path (the worktree sits a fixed 3 levels deep in the repo),
-leaving the repo-side backlink absolute. Result: you can `git status`/diff/commit inside the
-worktree from **both** the container and the host. (Container git is 2.39, which mishandles a
-relative backlink — hence only the forward link is relativized.)
+would make host-side `git status` fail (`not a git repository: /work/...`). To avoid this the
+workflow never runs a bare `git worktree add`; it calls the baked **`mkworktree`** helper
+(`image/bin/mkworktree`, on `PATH` in the container), which creates the worktree and rewrites its
+`.git` link to a **relative** path (the worktree sits a fixed 3 levels deep in the repo), leaving
+the repo-side backlink absolute. Result: you can `git status`/diff/commit inside the worktree from
+**both** the container and the host. (Container git is 2.39, which mishandles a relative backlink —
+hence only the forward link is relativized; the host's git 2.50 reads the relative forward link
+fine.)
 
 Cleanup removes the worktree and (after confirmation) the local branch; the remote branch and its
 PR are kept.
@@ -115,7 +121,8 @@ PR are kept.
   (choose "accept edits", or `Shift+Tab` to the bypass mode), implementation runs autonomously.
   That bypass is acceptable here because the container + read-only mount are the isolation
   boundary and writes are limited to the single target repo. The *remaining* gates (isolation
-  choice, commit, PR, cleanup) are enforced by the skill, not the permission layer.
+  choice, diff review, commit, finalize merge/PR, cleanup) are enforced by the skill, not the
+  permission layer — so nothing is committed or merged without your explicit go-ahead.
 - Most repos need Ruby ≥ 3.3 (image ships 3.4). A repo pinned to an older Ruby may need a
   tweaked base image.
 - Each `cw` call is ephemeral (`run --rm`). Repos persist on the host mount; Claude login

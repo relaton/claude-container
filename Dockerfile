@@ -40,6 +40,10 @@ RUN mkdir -p /home/dev/.claude/commands \
     && cp /opt/claude-skill/settings.json       /home/dev/.claude/settings.json \
     && chown -R dev /home/dev/.claude
 
+# Host-compatible worktree helper (on PATH so the skill can call it directly).
+COPY image/bin/mkworktree /usr/local/bin/mkworktree
+RUN chmod +x /usr/local/bin/mkworktree
+
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
