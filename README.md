@@ -76,6 +76,27 @@ docker compose -f compose.yml run --rm \
   dev claude --permission-mode plan --allow-dangerously-skip-permissions "/feature add retry logic"
 ```
 
+## How to organize your repos
+
+The container mounts the **parent** of `claude-container/` (the whole `ribose/` tree) read-only at
+`/work`, and `cw` derives the target from an `<org>/<repo>` layout. So put `claude-container/` and
+your project repos side by side under one root, with each repo two levels down as `<org>/<repo>`:
+
+```text
+ribose/                       # ← mounted read-only at /work (cross-project context)
+├── claude-container/         # this tooling repo (a sibling, not a project to work on)
+├── relaton/                  # <org>
+│   ├── relaton-bib/          #   └─ <repo>   → cw relaton/relaton-bib "..."
+│   └── relaton-cli/          #   └─ <repo>
+└── metanorma/                # <org>
+    └── metanorma-cli/        #   └─ <repo>   → cw metanorma/metanorma-cli "..."
+```
+
+- The root can have any name/location — `cw` finds it as the parent of `claude-container/`.
+- Each `<org>/<repo>` must be a **git repo** (`cw` checks for `.git`); only it is overlaid
+  read-write, with worktrees under its own `.claude/worktrees/`. Everything else stays read-only.
+- `claude-container` itself is reserved as the tooling dir, so it can't be a `cw` target.
+
 ## How it works
 
 | Piece | Role |
