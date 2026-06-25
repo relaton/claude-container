@@ -1,7 +1,7 @@
 # claude-container
 
 A Docker container that runs **Claude Code** to work on **one** of the sibling projects under
-`ribose/` through a fixed, gated workflow:
+`workspace/` through a fixed, gated workflow:
 
 > **plan** → adjust & confirm → **implement** in an isolated git worktree (TDD, full access,
 > no questions) → **run tests** → **review** → update **CLAUDE.md/docs** if needed →
@@ -11,7 +11,7 @@ Claude never commits, pushes, merges, or opens a PR. It leaves the finished work
 changes** on the chosen branch/worktree and hands it back to you — you decide what to commit, merge,
 or open a PR for, in your own time.
 
-Writes are physically confined to the chosen repo: the whole `ribose/` tree is mounted
+Writes are physically confined to the chosen repo: the whole `workspace/` tree is mounted
 **read-only** for context, and only the target repo is overlaid read-write (worktrees live
 inside it, under `.claude/worktrees/`).
 If a change needs another project, the workflow emits a **hand-off prompt** for a separate
@@ -20,7 +20,11 @@ session instead of editing it.
 ## One-time setup
 
 ```bash
-cd ribose/claude-container
+# clone this repo as a sibling of your project repos, under the shared root:
+cd workspace
+git clone https://github.com/relaton/claude-container.git
+
+cd claude-container
 docker compose build           # ruby 3.4 + node 20 + git + gh + Claude Code
 chmod +x bin/cw entrypoint.sh
 # optional: put bin/ on your PATH, e.g.
@@ -51,7 +55,7 @@ use the host's `BUNDLE_RUBYGEMS__PKG__GITHUB__COM`.
 Run from inside the project you want to work on:
 
 ```bash
-cd ribose/relaton/relaton-bib
+cd workspace/relaton/relaton-bib
 cw "add retry logic to the HTTP client"
 ```
 
@@ -63,9 +67,13 @@ completion and stops with the diff laid out for your review. The commit/merge/PR
 Other forms:
 
 ```bash
+cw                                          # bare: repo from $PWD, interactive; type /feature yourself
 cw relaton/relaton-bib "add retry logic"   # explicit repo, from anywhere
 cw relaton/relaton-bib                      # interactive; type /feature yourself
 ```
+
+Bare `cw` (no options) just opens an interactive Claude session in the current repo — no task is
+passed, so `/feature` isn't auto-invoked; run it yourself when you're ready.
 
 ### Raw equivalent (no wrapper)
 
@@ -78,12 +86,12 @@ docker compose -f compose.yml run --rm \
 
 ## How to organize your repos
 
-The container mounts the **parent** of `claude-container/` (the whole `ribose/` tree) read-only at
+The container mounts the **parent** of `claude-container/` (the whole `workspace/` tree) read-only at
 `/work`, and `cw` derives the target from an `<org>/<repo>` layout. So put `claude-container/` and
 your project repos side by side under one root, with each repo two levels down as `<org>/<repo>`:
 
 ```text
-ribose/                       # ← mounted read-only at /work (cross-project context)
+workspace/                       # ← mounted read-only at /work (cross-project context)
 ├── claude-container/         # this tooling repo (a sibling, not a project to work on)
 ├── relaton/                  # <org>
 │   ├── relaton-bib/          #   └─ <repo>   → cw relaton/relaton-bib "..."
@@ -102,7 +110,7 @@ ribose/                       # ← mounted read-only at /work (cross-project co
 | Piece | Role |
 |-------|------|
 | `Dockerfile` | ruby 3.4 + node 20 + git + gh + ripgrep + native-gem build deps + Claude Code; non-root `dev` user. |
-| `compose.yml` | mounts `ribose/` read-only at `/work`, host gh/git config, and a `claude-home` volume for login persistence. |
+| `compose.yml` | mounts `workspace/` read-only at `/work`, host gh/git config, and a `claude-home` volume for login persistence. |
 | `bin/cw` | host launcher; resolves the target repo and adds the read-write overlay. |
 | `image/commands/feature.md` | the `/feature` workflow skill (baked into the image). |
 | `image/settings.json` | container Claude defaults (model = opus). |
@@ -114,7 +122,7 @@ Right after you approve the plan, the workflow **asks** whether to isolate the w
 an isolated worktree, it creates the branch in a worktree **inside the repo**:
 
 ```
-ribose/<org>/<repo>/.claude/worktrees/<branch>/
+workspace/<org>/<repo>/.claude/worktrees/<branch>/
 ```
 
 The dir is excluded locally via `.git/info/exclude`, so it never shows as untracked or gets
@@ -122,7 +130,7 @@ committed (no change to the repo's tracked `.gitignore`). Living inside the targ
 worktree rides its read-write mount — no separate mount needed.
 
 **Host compatibility.** The container mounts the repo at `/work/...` but on the host it's at
-`/Users/.../ribose/...`. Git normally bakes an absolute path into a worktree's `.git` link, which
+`/Users/.../workspace/...`. Git normally bakes an absolute path into a worktree's `.git` link, which
 would make host-side `git status` fail (`not a git repository: /work/...`). The container ships
 **git ≥ 2.48** and sets `worktree.useRelativePaths=true` globally, so `git worktree add` writes
 **relative** links for both the forward `.git` link and the repo-side backlink — they resolve
