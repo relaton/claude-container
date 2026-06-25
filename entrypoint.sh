@@ -9,6 +9,13 @@ set -euo pipefail
 #                            container has no SSH key — route them over HTTPS.
 #   - credential helper    : feed GH_TOKEN (set by `cw` from `gh auth token`) as the
 #                            HTTPS password so `git push` authenticates.
+#   - worktree relative    : make `git worktree add` store RELATIVE .git links
+#                            (git 2.48+), so a worktree created at the container
+#                            path (/work/...) is also readable from the host
+#                            (/Users/...). Set globally so even a bare
+#                            `git worktree add` — not just the mkworktree helper —
+#                            is host-reachable. Git auto-sets the per-repo
+#                            extensions.relativeWorktrees on first such worktree.
 cat > "${HOME}/.gitconfig" <<'EOF'
 [include]
 	path = /home/dev/.gitconfig.host
@@ -18,6 +25,8 @@ cat > "${HOME}/.gitconfig" <<'EOF'
 	insteadOf = git@github.com:
 [credential "https://github.com"]
 	helper = "!f() { echo username=x-access-token; echo password=$GH_TOKEN; }; f"
+[worktree]
+	useRelativePaths = true
 EOF
 
 # Re-seed the baked skill + settings in case a named volume mounted over

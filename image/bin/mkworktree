@@ -1,23 +1,29 @@
 #!/usr/bin/env bash
 #
-# mkworktree <slug> [branch] — create an isolated git worktree that is reachable
-# from BOTH the container and the host.
+# mkworktree <name> [branch] — create an isolated git worktree under the repo's
+# own .claude/worktrees/ that is reachable from BOTH the container and the host.
 #
-# Why a helper instead of a raw `git worktree add`:
-#   The container ships git 2.39 (no `--relative-paths`). A plain `git worktree
-#   add` bakes the container's ABSOLUTE path (/work/...) into the worktree's .git
-#   link, so on the host (where the repo lives at /Users/...) `git status` inside
-#   it fails with "not a git repository: /work/...". This script creates the
-#   worktree under the repo's own .claude/worktrees/ (so it rides the repo's
-#   read-write bind mount and is physically present on the host) and rewrites the
-#   forward .git link to a RELATIVE path, making it usable from either side.
+# <name> is a conventional, type-prefixed branch name describing the work, e.g.
+#   feat/add-http-retry   fix/null-deref   chore/bump-deps   docs/readme
+# The worktree dir mirrors it (.claude/worktrees/<name>) and the branch defaults
+# to the same — so the directory and branch read identically.
 #
-# Result: ribose/<org>/<repo>/.claude/worktrees/<slug>  — review it from the host.
+# The container ships git >= 2.48, so we use NATIVE relative worktree links
+# (`git worktree add --relative-paths`): both the forward .git link and the
+# repo-side backlink are stored relative, so they resolve whether the repo is
+# seen at /work/... (container) or /Users/... (host). No path mismatch, no
+# manual link surgery, and no assumption about how deep the worktree sits — git
+# computes the relative path. (The container's global config also sets
+# worktree.useRelativePaths=true, so a bare `git worktree add` is host-reachable
+# too — this helper just adds the convenience of a fixed location, a sensible
+# branch name, and a local exclude so the dir never shows as untracked.)
+#
+# Result: ribose/<org>/<repo>/.claude/worktrees/<name>  — review it from the host.
 
 set -euo pipefail
 
-slug="${1:?usage: mkworktree <slug> [branch]}"
-branch="${2:-claude/${slug}}"
+name="${1:?usage: mkworktree <name> [branch]   (e.g. mkworktree feat/add-http-retry)}"
+branch="${2:-${name}}"
 
 # Resolve the MAIN repo root even if we're invoked from a subdir: the common git
 # dir is <root>/.git, so its parent is the repo root. (--path-format is git 2.31+.)
@@ -31,14 +37,12 @@ mkdir -p "$(dirname "$exclude")"
 grep -qxF '/.claude/worktrees/' "$exclude" 2>/dev/null \
   || echo '/.claude/worktrees/' >> "$exclude"
 
-git worktree add ".claude/worktrees/${slug}" -b "${branch}"
+# Native relative links (git 2.48+): usable from the container AND the host.
+# --relative-paths is explicit so this works even without the global config
+# (e.g. if mkworktree is ever run on the host). git creates intermediate dirs
+# for a slashed name (feat/...), so the dir mirrors the branch.
+git worktree add --relative-paths ".claude/worktrees/${name}" -b "${branch}"
 
-# Relativize ONLY the worktree's forward .git link (it sits exactly 3 levels below
-# the repo root). Leave the repo-side backlink (.git/worktrees/<slug>/gitdir)
-# absolute so the container's git 2.39 worktree admin (list/remove/prune) keeps
-# working. Net effect: status/diff/commit work from the container AND the host.
-printf 'gitdir: ../../../.git/worktrees/%s\n' "${slug}" > ".claude/worktrees/${slug}/.git"
-
-echo "mkworktree: created .claude/worktrees/${slug}  (branch ${branch})"
-echo "mkworktree: host path -> <repo>/.claude/worktrees/${slug}"
-echo "mkworktree: next -> cd .claude/worktrees/${slug}"
+echo "mkworktree: created .claude/worktrees/${name}  (branch ${branch})"
+echo "mkworktree: host path -> <repo>/.claude/worktrees/${name}"
+echo "mkworktree: next -> cd .claude/worktrees/${name}"

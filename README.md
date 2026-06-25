@@ -5,9 +5,11 @@ A Docker container that runs **Claude Code** to work on **one** of the sibling p
 
 > **plan** → adjust & confirm → **implement** in an isolated git worktree (TDD, full access,
 > no questions) → **run tests** → **review** → update **CLAUDE.md/docs** if needed →
-> **review the diff** (you approve) → **commit** (message reviewed) → **finalize: merge _or_
-> open a PR** (your choice, body reviewed) → **remove worktree** (confirm) → **remove branch**
-> (confirm).
+> **show you the diff and stop.**
+
+Claude never commits, pushes, merges, or opens a PR. It leaves the finished work as **uncommitted
+changes** on the chosen branch/worktree and hands it back to you — you decide what to commit, merge,
+or open a PR for, in your own time.
 
 Writes are physically confined to the chosen repo: the whole `ribose/` tree is mounted
 **read-only** for context, and only the target repo is overlaid read-write (worktrees live
@@ -55,9 +57,8 @@ cw "add retry logic to the HTTP client"
 
 `cw` derives `<org>/<repo>` from the current directory, launches an interactive Claude session
 (with full tool access), and auto-invokes the `/feature` workflow with your task. Stay attached
-to the terminal — the workflow pauses for you at the plan, isolation choice, the change/diff
-review, the commit message, the finalize choice (merge or PR) plus PR-body, and the two cleanup
-confirmations.
+to the terminal — the workflow pauses for you at the plan and the isolation choice, then runs to
+completion and stops with the diff laid out for your review. The commit/merge/PR are left to you.
 
 Other forms:
 
@@ -101,17 +102,22 @@ worktree rides its read-write mount — no separate mount needed.
 
 **Host compatibility.** The container mounts the repo at `/work/...` but on the host it's at
 `/Users/.../ribose/...`. Git normally bakes an absolute path into a worktree's `.git` link, which
-would make host-side `git status` fail (`not a git repository: /work/...`). To avoid this the
-workflow never runs a bare `git worktree add`; it calls the baked **`mkworktree`** helper
-(`image/bin/mkworktree`, on `PATH` in the container), which creates the worktree and rewrites its
-`.git` link to a **relative** path (the worktree sits a fixed 3 levels deep in the repo), leaving
-the repo-side backlink absolute. Result: you can `git status`/diff/commit inside the worktree from
-**both** the container and the host. (Container git is 2.39, which mishandles a relative backlink —
-hence only the forward link is relativized; the host's git 2.50 reads the relative forward link
-fine.)
+would make host-side `git status` fail (`not a git repository: /work/...`). The container ships
+**git ≥ 2.48** and sets `worktree.useRelativePaths=true` globally, so `git worktree add` writes
+**relative** links for both the forward `.git` link and the repo-side backlink — they resolve
+whether the repo is seen at `/work/...` or `/Users/...`. Result: you can `git status`/diff/commit
+inside the worktree from **both** the container and the host, and even a bare `git worktree add`
+(not just the helper) stays host-reachable. The baked **`mkworktree`** helper
+(`image/bin/mkworktree`, on `PATH`) is still preferred — it just adds the convenience of a fixed
+location under `.claude/worktrees/`, a conventional `<type>/<slug>` branch name (e.g.
+`feat/add-http-retry`), and the local exclude.
 
-Cleanup removes the worktree and (after confirmation) the local branch; the remote branch and its
-PR are kept.
+> Git auto-sets the per-repo `extensions.relativeWorktrees` flag on the first relative worktree.
+> Your host git (2.50) understands it; very old host git/libgit2 tooling may not.
+
+The worktree and branch are left in place when Claude stops, so you can review and finalize the
+changes from the host. Remove the worktree yourself once you're done (`git worktree remove
+.claude/worktrees/<branch>`).
 
 ## Notes & caveats
 
@@ -120,9 +126,9 @@ PR are kept.
   It's paired with `--allow-dangerously-skip-permissions` so that, once you approve the plan
   (choose "accept edits", or `Shift+Tab` to the bypass mode), implementation runs autonomously.
   That bypass is acceptable here because the container + read-only mount are the isolation
-  boundary and writes are limited to the single target repo. The *remaining* gates (isolation
-  choice, diff review, commit, finalize merge/PR, cleanup) are enforced by the skill, not the
-  permission layer — so nothing is committed or merged without your explicit go-ahead.
+  boundary and writes are limited to the single target repo. The isolation-choice gate and the
+  "never commit/push/merge/PR — stop and hand back the diff" rule are enforced by the skill, not
+  the permission layer, so they rely on Claude following the workflow prompt.
 - Most repos need Ruby ≥ 3.3 (image ships 3.4). A repo pinned to an older Ruby may need a
   tweaked base image.
 - Each `cw` call is ephemeral (`run --rm`). Repos persist on the host mount; Claude login
