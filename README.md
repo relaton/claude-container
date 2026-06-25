@@ -75,6 +75,9 @@ cw relaton/relaton-bib                      # interactive; type /feature yoursel
 Bare `cw` (no options) just opens an interactive Claude session in the current repo — no task is
 passed, so `/feature` isn't auto-invoked; run it yourself when you're ready.
 
+To review the work, run the **`/diff`** command in the session — it walks you through the pending
+changes so you can review them before deciding what to commit, merge, or open a PR for.
+
 ### Raw equivalent (no wrapper)
 
 ```bash
