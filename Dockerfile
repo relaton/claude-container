@@ -5,6 +5,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       git curl ca-certificates gnupg ripgrep less jq \
       build-essential pkg-config cmake \
       libffi-dev libyaml-dev libxml2-dev libxslt1-dev zlib1g-dev libssl-dev \
+      default-jre-headless \
     && rm -rf /var/lib/apt/lists/*
 
 # --- modern git (>=2.48 for native relative worktrees) ----------------------

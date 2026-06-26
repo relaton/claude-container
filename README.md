@@ -25,7 +25,7 @@ cd workspace
 git clone https://github.com/relaton/claude-container.git
 
 cd claude-container
-docker compose build           # ruby 3.4 + node 20 + git + gh + Claude Code
+docker compose build           # ruby 3.4 + node 20 + git + gh + java + Claude Code
 chmod +x bin/cw entrypoint.sh
 # optional: put bin/ on your PATH, e.g.
 #   export PATH="$PWD/bin:$PATH"
@@ -112,7 +112,7 @@ workspace/                       # ← mounted read-only at /work (cross-project
 
 | Piece | Role |
 |-------|------|
-| `Dockerfile` | ruby 3.4 + node 20 + git + gh + ripgrep + native-gem build deps + Claude Code; non-root `dev` user. |
+| `Dockerfile` | ruby 3.4 + node 20 + git + gh + ripgrep + java (JRE for ruby-jing) + native-gem build deps + Claude Code; non-root `dev` user. |
 | `compose.yml` | mounts `workspace/` read-only at `/work`, host gh/git config, and a `claude-home` volume for login persistence. |
 | `bin/cw` | host launcher; resolves the target repo and adds the read-write overlay. |
 | `image/commands/feature.md` | the `/feature` workflow skill (baked into the image). |
