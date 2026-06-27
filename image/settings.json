@@ -1,6 +1,6 @@
 {
   "model": "opus",
-  "includeCoAuthoredBy": true,
+  "includeCoAuthoredBy": false,
   "cleanupPeriodDays": 30,
   "env": {
     "DISABLE_AUTOUPDATER": "1"
