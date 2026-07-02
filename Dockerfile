@@ -18,8 +18,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 ARG GIT_VERSION=2.50.0
 RUN apt-get update && apt-get install -y --no-install-recommends \
       gettext libcurl4-openssl-dev libexpat1-dev perl \
-    && curl -fsSL "https://www.kernel.org/pub/software/scm/git/git-${GIT_VERSION}.tar.gz" -o /tmp/git.tar.gz \
+    && curl -fsSL "https://github.com/git/git/archive/refs/tags/v${GIT_VERSION}.tar.gz" -o /tmp/git.tar.gz \
     && tar -xzf /tmp/git.tar.gz -C /tmp \
+    && echo "${GIT_VERSION}" > "/tmp/git-${GIT_VERSION}/version" \
     && make -C "/tmp/git-${GIT_VERSION}" prefix=/usr/local NO_TCLTK=1 -j"$(nproc)" install \
     && rm -rf /tmp/git* /var/lib/apt/lists/*
 
