@@ -25,10 +25,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /tmp/git* /var/lib/apt/lists/*
 
 # --- Node 20 (for Claude Code) ----------------------------------------------
+# Bump CLAUDE_CODE_VERSION (or pass --build-arg CLAUDE_CODE_VERSION=<x>) to
+# update Claude Code — changing the arg busts the cache for just this layer.
+ARG CLAUDE_CODE_VERSION=latest
 RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/* \
-    && npm install -g @anthropic-ai/claude-code
+    && npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"
 
 # --- GitHub CLI --------------------------------------------------------------
 RUN mkdir -p -m 755 /etc/apt/keyrings \

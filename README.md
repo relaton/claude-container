@@ -151,6 +151,30 @@ The worktree and branch are left in place when Claude stops, so you can review a
 changes from the host. Remove the worktree yourself once you're done (`git worktree remove
 .claude/worktrees/<branch>`).
 
+## Updating Claude Code
+
+Claude Code is installed into the image (via npm), so updating it means rebuilding.
+The version is a build arg, `CLAUDE_CODE_VERSION`, defaulting to `latest`.
+
+**Recommended — pin to a specific new version.** Changing the arg value busts the cache
+for just that layer, and gives you reproducible builds and easy rollback:
+
+```bash
+docker compose build --build-arg CLAUDE_CODE_VERSION=2.0.34
+```
+
+**Stay on `latest`.** Since the arg value doesn't change, Docker would reuse the cached
+layer and keep the old version — so force a clean rebuild:
+
+```bash
+docker compose build --no-cache
+```
+
+(This also recompiles git from source, so it's slower; pinning a version is the quicker path.)
+
+The next `cw` run uses the rebuilt image automatically (each call is ephemeral `run --rm`).
+Your login is unaffected — it lives in the `claude-home` volume, not the image.
+
 ## Notes & caveats
 
 - The session starts in **plan mode** (`--permission-mode plan`), so Claude must present a plan

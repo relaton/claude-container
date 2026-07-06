@@ -15,6 +15,9 @@ services:
         #   docker compose build --build-arg HOST_UID=$(id -u) --build-arg HOST_GID=$(id -g)
         HOST_UID: "${HOST_UID:-1000}"
         HOST_GID: "${HOST_GID:-1000}"
+        # Claude Code version. Bump to update (see README "Updating Claude Code"):
+        #   docker compose build --build-arg CLAUDE_CODE_VERSION=latest
+        CLAUDE_CODE_VERSION: "${CLAUDE_CODE_VERSION:-latest}"
     image: ribose-claude-container
     working_dir: /work
     tty: true
