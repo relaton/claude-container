@@ -18,9 +18,12 @@ they asked for, and nothing more.
 
 ## Hard rules (read first)
 
-- **Single-project boundary.** The current repo (your working directory) is the ONLY thing
+- **Single-project boundary.** The current repo (your working directory) is the ONLY project
   you may modify. Everything else under `/work` is mounted **read-only** — you may read
   related projects for context, but any write to them will fail. **Never** try to edit them.
+  The one exception is `/work/HANDOFFS`, a shared inbox that is mounted writable: it takes
+  hand-off prompts (Step 8) and nothing else. Never put code there, and never treat it as a
+  way around the boundary.
 - **You stop when the work is done — you do not finalize it on your own.** Your job ends at Step 7:
   implement, test, review, then show the user the diff and stop. **Do not `git commit`, `git add`,
   `git push`, `git merge`, `gh pr create`, or `gh pr merge` on your own initiative** — leave the
@@ -50,7 +53,15 @@ they asked for, and nothing more.
 
 ### 1. Plan (GATE)
 You begin in **plan mode** — you cannot edit yet, which is intended. Identify the repo from the
-working directory. Research with the `Explore` agent and by reading relevant files (including
+working directory.
+
+**Check the hand-off inbox first** for work another session addressed to this repo:
+`ls /work/HANDOFFS/<org>__<repo>__*.md 2>/dev/null`. If any exist, read them and tell the user
+what is pending. If one covers or overlaps the requested task, fold it into the plan and say so;
+otherwise just list them as known pending work and carry on with the task you were given. Do
+**not** delete or modify a hand-off file — the user decides when it is done.
+
+Research with the `Explore` agent and by reading relevant files (including
 read-only related projects if useful). Produce a concise plan: goal, files to change, test
 strategy, and a short **branch name** — a conventional, type-prefixed, kebab-case name describing
 the work: `<type>/<slug>` where `<type>` is one of `feat`, `fix`, `chore`, `docs`, or `refactor`
@@ -126,7 +137,7 @@ Present a clear summary so the user can review and decide what to do next:
 - the **changed-files list** (`git status --porcelain`) and a **diff overview** (`git diff --stat`,
   plus the key hunks so they can see what changed);
 - the **test result** (and rubocop, if run);
-- any **cross-project hand-off** files written in Step 8.
+- any **cross-project hand-off** files written to `/work/HANDOFFS/` in Step 8, by full path.
 
 Then stop and let the user take it from here — by default they will commit / merge / open a PR
 themselves when and how they choose. Do not ask "should I commit?" or offer to do it; handing back
@@ -139,6 +150,11 @@ gem):
 - Do **not** edit that project.
 - Write a self-contained hand-off prompt — target project, what to change, required
   API/signature, why, and how this repo will consume it.
-- Print it AND save it to `HANDOFFS/<other-org>__<other-repo>.md` in the worktree, and mention it
-  in the Step 7 summary. Tell the user they can run it later with:
-  `cd /work/<other-org>/<other-repo>` then `cw "<paste the prompt>"` (a separate session).
+- Print it AND save it to the shared inbox at
+  `/work/HANDOFFS/<other-org>__<other-repo>__<slug>.md`, where `<slug>` is a kebab-case
+  description of the change (e.g. `/work/HANDOFFS/relaton__relaton-bib__add-http-retry.md`). The
+  `<org>__<repo>__` prefix is what lets the target repo's next session find it, so get it right.
+  If that exact filename already exists, do **not** clobber it — choose a distinct slug.
+- Mention the file (by full path) in the Step 7 summary. Tell the user they can pick it up later
+  with `cd /work/<other-org>/<other-repo>` then `cw` — that session reads the inbox at Step 1 and
+  will surface the hand-off itself, so there is nothing to paste.

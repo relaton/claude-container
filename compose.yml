@@ -3,6 +3,8 @@
 # `/work` is the whole ribose/ tree mounted READ-ONLY (for cross-project context).
 # The `cw` launcher overlays a READ-WRITE mount on just the target repo; worktrees
 # live inside it (.claude/worktrees/), so writes are confined to that one project.
+# The one other writable spot is `/work/HANDOFFS`, a shared inbox for cross-project
+# hand-off prompts — not a repo, so the single-project boundary still holds.
 #
 # Run via the `bin/cw` launcher (recommended). Raw equivalent is in README.md.
 
@@ -25,6 +27,12 @@ services:
     volumes:
       # All repos, read-only — context for related projects.
       - ../:/work:ro
+      # Cross-project hand-off inbox — the one writable spot outside the target repo.
+      # The deeper bind overrides the read-only mount above. The source must live INSIDE
+      # the tree mounted at /work (i.e. at the workspace root, next to the org dirs), so
+      # that /work/HANDOFFS already exists as a mountpoint — runc cannot mkdir one inside
+      # a read-only parent. `bin/cw` creates it host-side before launching.
+      - ../HANDOFFS:/work/HANDOFFS
       # Host auth/config (file-based on macOS → mounts cleanly).
       - ${HOME}/.config/gh:/home/dev/.config/gh
       # Host gitconfig at a side path; the entrypoint builds a writable ~/.gitconfig
