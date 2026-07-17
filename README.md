@@ -14,8 +14,14 @@ or open a PR for, in your own time.
 Writes are physically confined to the chosen repo: the whole `workspace/` tree is mounted
 **read-only** for context, and only the target repo is overlaid read-write (worktrees live
 inside it, under `.claude/worktrees/`).
-If a change needs another project, the workflow emits a **hand-off prompt** for a separate
-session instead of editing it.
+
+If a change needs another project, the workflow never edits it — it writes a self-contained
+**hand-off prompt** to the shared inbox at `workspace/HANDOFFS/` (created by `cw`, alongside the
+org dirs), named `<org>__<repo>__<slug>.md` — e.g. `relaton__relaton-bib__add-http-retry.md`.
+Mounted at `/work/HANDOFFS`, this inbox is the only writable spot outside the target repo, and it
+takes hand-off prompts only, never code. Next time you run `cw` in the repo a hand-off is addressed
+to, that session reads its pending hand-offs while planning and tells you about them — so there's
+nothing to copy around by hand. Delete a hand-off file when it's done; nothing else will.
 
 ## One-time setup
 
@@ -96,6 +102,7 @@ your project repos side by side under one root, with each repo two levels down a
 ```text
 workspace/                       # ← mounted read-only at /work (cross-project context)
 ├── claude-container/         # this tooling repo (a sibling, not a project to work on)
+├── HANDOFFS/                 # shared cross-project hand-off inbox (writable at /work/HANDOFFS)
 ├── relaton/                  # <org>
 │   ├── relaton-bib/          #   └─ <repo>   → cw relaton/relaton-bib "..."
 │   └── relaton-cli/          #   └─ <repo>
@@ -105,7 +112,8 @@ workspace/                       # ← mounted read-only at /work (cross-project
 
 - The root can have any name/location — `cw` finds it as the parent of `claude-container/`.
 - Each `<org>/<repo>` must be a **git repo** (`cw` checks for `.git`); only it is overlaid
-  read-write, with worktrees under its own `.claude/worktrees/`. Everything else stays read-only.
+  read-write, with worktrees under its own `.claude/worktrees/`. Everything else stays read-only,
+  except the `HANDOFFS/` inbox, which `cw` creates and mounts read-write for hand-off prompts only.
 - `claude-container` itself is reserved as the tooling dir, so it can't be a `cw` target.
 
 ## How it works
@@ -113,8 +121,8 @@ workspace/                       # ← mounted read-only at /work (cross-project
 | Piece | Role |
 |-------|------|
 | `Dockerfile` | ruby 3.4 + node 20 + git + gh + ripgrep + java (JRE for ruby-jing) + native-gem build deps + Claude Code; non-root `dev` user. |
-| `compose.yml` | mounts `workspace/` read-only at `/work`, host gh/git config, and a `claude-home` volume for login persistence. |
-| `bin/cw` | host launcher; resolves the target repo and adds the read-write overlay. |
+| `compose.yml` | mounts `workspace/` read-only at `/work`, the `HANDOFFS/` inbox read-write, host gh/git config, and a `claude-home` volume for login persistence. |
+| `bin/cw` | host launcher; resolves the target repo, adds the read-write overlay, and creates the hand-off inbox. |
 | `image/commands/feature.md` | the `/feature` workflow skill (baked into the image). |
 | `image/settings.json` | container Claude defaults (model = opus). |
 | `entrypoint.sh` | sets `git safe.directory`, re-seeds the skill if the volume hid it. |

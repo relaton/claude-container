@@ -7,8 +7,9 @@
 #   cw <org>/<repo> ["task description"]                 # explicit repo
 #
 # Everything under /work is read-only inside the container EXCEPT the target
-# repo, which is overlaid read-write below. Worktrees are created inside it at
-# .claude/worktrees/<slug>, so all writes stay confined to the single project.
+# repo, which is overlaid read-write below, and /work/HANDOFFS, the shared
+# cross-project hand-off inbox. Worktrees are created inside the target repo at
+# .claude/worktrees/<slug>, so all code writes stay confined to the single project.
 
 set -euo pipefail
 
@@ -42,6 +43,12 @@ repo="${target#*/}"
 
 task="$*"
 
+# Cross-project hand-off inbox (mounted read-write at /work/HANDOFFS). It lives at the
+# workspace root so that /work/HANDOFFS exists inside the read-only /work mount — a bind
+# cannot create its own mountpoint there. Create it here so it is owned by the host user;
+# compose would otherwise create it root-owned and the container could not write to it.
+mkdir -p "${RIBOSE_ROOT}/HANDOFFS"
+
 # GitHub auth for the container: the host stores its gh token in the macOS keyring
 # (not in the mounted ~/.config/gh), so pull it out and pass it as GH_TOKEN, which
 # compose forwards. The container's git is configured to use it for HTTPS pushes.
@@ -59,7 +66,7 @@ if [[ -n "$task" ]]; then
   cmd+=("/feature ${task}")
 fi
 
-echo "cw: project=${target}  (writes confined to this repo, incl. its .claude/worktrees)" >&2
+echo "cw: project=${target}  (writes confined to this repo, incl. its .claude/worktrees, plus /work/HANDOFFS)" >&2
 [[ -n "$task" ]] && echo "cw: task=${task}" >&2
 
 # Only the target repo is mounted read-write. Worktrees live inside it at
