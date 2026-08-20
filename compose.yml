@@ -41,6 +41,10 @@ services:
       # Persist Claude Code login across ephemeral runs.
       - claude-home:/home/dev/.claude
     environment:
+      # Where the shared hand-off inbox lives inside the container. `bin/cwl` exports
+      # the equivalent host path, so image/commands/feature.md can name one variable
+      # and work under both launchers.
+      - CW_HANDOFFS=/work/HANDOFFS
       # Private gem auth (GitHub Packages) — already exported on the host.
       - BUNDLE_RUBYGEMS__PKG__GITHUB__COM
       # Optional auth fallbacks (see .env.example).

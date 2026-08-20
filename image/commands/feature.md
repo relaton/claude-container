@@ -19,9 +19,9 @@ they asked for, and nothing more.
 ## Hard rules (read first)
 
 - **Single-project boundary.** The current repo (your working directory) is the ONLY project
-  you may modify. Everything else under `/work` is mounted **read-only** — you may read
-  related projects for context, but any write to them will fail. **Never** try to edit them.
-  The one exception is `/work/HANDOFFS`, a shared inbox that is mounted writable: it takes
+  you may modify. Every other project in the workspace is **readable but not writable** — you may
+  read them for context, but any write to them will fail. **Never** try to edit them.
+  The one exception is the shared inbox at `$CW_HANDOFFS`, which IS writable: it takes
   hand-off prompts (Step 8) and nothing else. Never put code there, and never treat it as a
   way around the boundary.
 - **You stop when the work is done — you do not finalize it on your own.** Your job ends at Step 7:
@@ -56,7 +56,7 @@ You begin in **plan mode** — you cannot edit yet, which is intended. Identify 
 working directory.
 
 **Check the hand-off inbox first** for work another session addressed to this repo:
-`ls /work/HANDOFFS/<org>__<repo>__*.md 2>/dev/null`. If any exist, read them and tell the user
+`ls "$CW_HANDOFFS"/<org>__<repo>__*.md 2>/dev/null`. If any exist, read them and tell the user
 what is pending. If one covers or overlaps the requested task, fold it into the plan and say so;
 otherwise just list them as known pending work and carry on with the task you were given. Do
 **not** delete or modify a hand-off file — the user decides when it is done.
@@ -137,7 +137,7 @@ Present a clear summary so the user can review and decide what to do next:
 - the **changed-files list** (`git status --porcelain`) and a **diff overview** (`git diff --stat`,
   plus the key hunks so they can see what changed);
 - the **test result** (and rubocop, if run);
-- any **cross-project hand-off** files written to `/work/HANDOFFS/` in Step 8, by full path.
+- any **cross-project hand-off** files written to `$CW_HANDOFFS/` in Step 8, by full path.
 
 Then stop and let the user take it from here — by default they will commit / merge / open a PR
 themselves when and how they choose. Do not ask "should I commit?" or offer to do it; handing back
@@ -151,10 +151,10 @@ gem):
 - Write a self-contained hand-off prompt — target project, what to change, required
   API/signature, why, and how this repo will consume it.
 - Print it AND save it to the shared inbox at
-  `/work/HANDOFFS/<other-org>__<other-repo>__<slug>.md`, where `<slug>` is a kebab-case
-  description of the change (e.g. `/work/HANDOFFS/relaton__relaton-bib__add-http-retry.md`). The
+  `$CW_HANDOFFS/<other-org>__<other-repo>__<slug>.md`, where `<slug>` is a kebab-case
+  description of the change (e.g. `$CW_HANDOFFS/relaton__relaton-bib__add-http-retry.md`). The
   `<org>__<repo>__` prefix is what lets the target repo's next session find it, so get it right.
   If that exact filename already exists, do **not** clobber it — choose a distinct slug.
 - Mention the file (by full path) in the Step 7 summary. Tell the user they can pick it up later
-  with `cd /work/<other-org>/<other-repo>` then `cw` — that session reads the inbox at Step 1 and
+  by starting a session in `<other-org>/<other-repo>` (`cw` or `cwl`) — that session reads the inbox at Step 1 and
   will surface the hand-off itself, so there is nothing to paste.

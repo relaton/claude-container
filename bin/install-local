@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+#
+# install-local — one-time host setup for the no-Docker launcher (`cwl`).
+#
+# The container baked the slash command and the worktree helper into its image and
+# re-seeded them on every run (see entrypoint.sh). On the host they just need to be
+# on the usual paths. These are SYMLINKS, so edits under image/ take effect at once
+# and never go stale — the property entrypoint.sh's unconditional re-copy provided.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
+CMD_DIR="${HOME}/.claude/commands"
+BIN_DIR="${HOME}/.local/bin"
+
+link() {
+  local src="$1" dst="$2"
+  if [[ -L "$dst" && "$(readlink "$dst")" == "$src" ]]; then
+    echo "  ok       ${dst}"
+    return
+  fi
+  if [[ -e "$dst" && ! -L "$dst" ]]; then
+    echo "  SKIP     ${dst} exists and is not a symlink — move it aside first." >&2
+    return
+  fi
+  ln -sfn "$src" "$dst"
+  echo "  linked   ${dst} -> ${src}"
+}
+
+echo "install-local: linking image assets"
+mkdir -p "${CMD_DIR}" "${BIN_DIR}"
+link "${REPO_DIR}/image/commands/feature.md" "${CMD_DIR}/feature.md"
+link "${REPO_DIR}/image/bin/mkworktree"      "${BIN_DIR}/mkworktree"
+
+echo "install-local: checking prerequisites"
+missing=0
+check() {
+  if command -v "$1" >/dev/null 2>&1; then
+    echo "  ok       $1"
+  else
+    echo "  MISSING  $1 — $2" >&2
+    missing=1
+  fi
+}
+check claude "npm i -g @anthropic-ai/claude-code"
+check jq     "brew install jq"
+check gh     "brew install gh"
+
+case ":${PATH}:" in
+  *":${BIN_DIR}:"*) ;;
+  *) echo "  NOTE     ${BIN_DIR} is not on PATH — add it so mkworktree resolves." >&2 ;;
+esac
+
+if [[ "$missing" -eq 0 ]]; then
+  echo "install-local: ready — run 'cwl <org>/<repo> \"task\"'"
+else
+  echo "install-local: install the missing tools above, then re-run." >&2
+  exit 1
+fi

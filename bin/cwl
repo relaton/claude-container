@@ -1,0 +1,224 @@
+#!/usr/bin/env bash
+#
+# cwl — launch the Claude workflow for ONE ribose project WITHOUT Docker.
+#
+# Usage:
+#   cd ribose/<org>/<repo> && cwl ["task description"]   # derive repo from $PWD
+#   cwl <org>/<repo> ["task description"]                 # explicit repo
+#
+# Host-native counterpart to `cw`. The container's boundary is a mount namespace;
+# here it is two layers:
+#
+#   Bash and every process it spawns  -> Claude Code's built-in sandbox (Seatbelt on
+#     macOS). Kernel-enforced: writes are confined to the target repo, reads to
+#     everything except the denied secrets, and network egress to an allowlist.
+#   Read / Edit / Write / MCP / hooks -> permission rules. These run inside the Claude
+#     Code process and are NOT covered by the sandbox, so the generated deny list below
+#     closes them off explicitly.
+#
+# Because the file tools are gated by the permission layer rather than the kernel, this
+# does NOT pass --allow-dangerously-skip-permissions the way `cw` does — that flag would
+# skip the very deny rules doing the work. Bash still runs prompt-free, via the sandbox's
+# auto-allow, which is where nearly all the prompts came from anyway.
+#
+# The earlier sandbox-runtime (`srt`) version of this launcher was abandoned: srt's
+# Seatbelt profile denies tcsetattr on the real controlling terminal, so Claude Code
+# cannot enter raw mode and the interactive TUI is unusable. See README.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+COMPOSE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"      # .../ribose/claude-container
+RIBOSE_ROOT="$(cd "${COMPOSE_DIR}/.." && pwd)"     # .../ribose
+
+die() { echo "cwl: $*" >&2; exit 1; }
+
+# --- resolve the target repo (org/repo) -------------------------------------
+# Same contract as `cw`, so the two launchers are interchangeable.
+target=""
+if [[ $# -ge 1 && "$1" == */* ]]; then
+  # An explicit org/repo that does not exist is a typo, not part of the task
+  # description — fail loudly instead of silently falling back to $PWD.
+  [[ -d "${RIBOSE_ROOT}/$1" ]] || die "no such project: ${RIBOSE_ROOT}/$1"
+  target="$1"; shift
+elif [[ "${PWD}/" == "${RIBOSE_ROOT}/"* ]]; then
+  rel="${PWD#"${RIBOSE_ROOT}"/}"
+  target="$(printf '%s' "$rel" | cut -d/ -f1-2)"
+else
+  die "run from inside a ribose project dir, or pass <org>/<repo> explicitly.
+     e.g.  cd ${RIBOSE_ROOT}/relaton/relaton-bib && cwl \"add retry logic\""
+fi
+
+org="${target%%/*}"
+repo="${target#*/}"
+[[ -n "$org" && -n "$repo" && "$org" != "$target" ]] \
+  || die "could not resolve <org>/<repo> from '${target}'."
+[[ "$org" != "claude-container" ]] \
+  || die "claude-container is the tooling dir, not a project to work on."
+[[ -d "${RIBOSE_ROOT}/${target}/.git" || -f "${RIBOSE_ROOT}/${target}/.git" ]] \
+  || die "${target} is not a git repo (${RIBOSE_ROOT}/${target})."
+
+task="$*"
+repo_path="${RIBOSE_ROOT}/${target}"
+
+command -v jq >/dev/null 2>&1 || die "jq not found (brew install jq)."
+
+# --- shared hand-off inbox ---------------------------------------------------
+# Exported so image/commands/feature.md can name one path under both launchers
+# (/work/HANDOFFS in the container, the real host path here).
+export CW_HANDOFFS="${RIBOSE_ROOT}/HANDOFFS"
+mkdir -p "${CW_HANDOFFS}"
+
+# --- GitHub auth -------------------------------------------------------------
+# The host keeps its gh token in the macOS keyring, not in a file, so materialise it.
+export GH_TOKEN="${GH_TOKEN:-$(gh auth token 2>/dev/null || true)}"
+[[ -z "${GH_TOKEN}" ]] && echo "cwl: warning — no GH_TOKEN (run 'gh auth login'); pushes will fail." >&2
+
+# Replicate entrypoint.sh's git setup WITHOUT writing to ~/.gitconfig: rewrite SSH
+# remotes to HTTPS and authenticate them with GH_TOKEN. This is what lets us deny
+# read access to ~/.ssh below while leaving fetch/push working, exactly as in the
+# container (which never had the host's SSH keys either). An empty first value resets
+# the inherited helper chain so the host's osxkeychain helper — which cannot reach the
+# keychain from inside the sandbox — is not consulted.
+export GIT_CONFIG_COUNT=3
+export GIT_CONFIG_KEY_0="credential.helper"
+export GIT_CONFIG_VALUE_0=""
+export GIT_CONFIG_KEY_1="url.https://github.com/.insteadOf"
+export GIT_CONFIG_VALUE_1="git@github.com:"
+export GIT_CONFIG_KEY_2="credential.https://github.com.helper"
+export GIT_CONFIG_VALUE_2='!f() { echo username=x-access-token; echo password=$GH_TOKEN; }; f'
+
+# --- skip the folder-trust prompt for this repo ------------------------------
+# entrypoint.sh does this inside the container; it is needed on the host too, because
+# trust is stored PER PROJECT DIRECTORY, so a repo you have never opened still prompts.
+# Onboarding is already done on the host, so only the per-project flag is set.
+claude_json="${HOME}/.claude.json"
+[[ -f "${claude_json}" ]] || echo '{}' > "${claude_json}"
+if ! jq -e --arg dir "${repo_path}" \
+      '.projects[$dir].hasTrustDialogAccepted == true' "${claude_json}" >/dev/null 2>&1; then
+  seed_tmp="$(mktemp "${TMPDIR:-/tmp}/cwl-claudejson-XXXXXX")"
+  if jq --arg dir "${repo_path}" '
+        .projects = (.projects // {})
+        | .projects[$dir] = ((.projects[$dir] // {}) + {hasTrustDialogAccepted: true})
+      ' "${claude_json}" > "${seed_tmp}"; then
+    mv "${seed_tmp}" "${claude_json}"
+    echo "cwl: trusted ${target} (folder-trust prompt pre-accepted)" >&2
+  else
+    rm -f "${seed_tmp}"
+    echo "cwl: warning — could not seed folder trust; you may get a prompt." >&2
+  fi
+fi
+
+# --- every other project, for the file-tool deny list ------------------------
+# Deny rules take precedence over allow rules, so we cannot blanket-deny the workspace
+# and re-allow the target. Instead name every sibling explicitly: other org dirs whole,
+# and inside the target's own org, each sibling repo. HANDOFFS is left out — it is the
+# one writable spot besides the repo.
+others=()
+while IFS= read -r d; do
+  b="$(basename "$d")"
+  [[ "$b" == "HANDOFFS" || "$b" == "$org" ]] && continue
+  others+=("${RIBOSE_ROOT}/${b}")
+done < <(find "${RIBOSE_ROOT}" -maxdepth 1 -mindepth 1 -type d)
+while IFS= read -r d; do
+  b="$(basename "$d")"
+  [[ "$b" == "$repo" ]] && continue
+  others+=("${RIBOSE_ROOT}/${org}/${b}")
+done < <(find "${RIBOSE_ROOT}/${org}" -maxdepth 1 -mindepth 1 -type d)
+
+# --- session settings --------------------------------------------------------
+# Written to a file rather than passed inline: the deny list runs to ~100 entries.
+# BSD mktemp only substitutes a trailing run of X's, so use a directory.
+cfg_dir="$(mktemp -d "${TMPDIR:-/tmp}/cwl-${org}__${repo}-XXXXXX")"
+cfg="${cfg_dir}/settings.json"
+trap 'rm -rf "${cfg_dir}"' EXIT
+
+extra_domains='[]'
+if [[ -n "${CWL_EXTRA_DOMAINS:-}" ]]; then
+  extra_domains="$(printf '%s' "${CWL_EXTRA_DOMAINS}" | tr ',' '\n' | jq -R . | jq -s -c .)"
+fi
+
+printf '%s\n' "${others[@]}" | jq -R . | jq -s \
+  --arg repo_path "${repo_path}" \
+  --arg handoffs  "${CW_HANDOFFS}" \
+  --arg home      "${HOME}" \
+  --argjson extra "${extra_domains}" \
+  '{
+    model: "opus",
+    includeCoAuthoredBy: false,
+    env: {DISABLE_AUTOUPDATER: "1"},
+    permissions: {
+      # Deny beats allow, and these cover the tools the sandbox does not reach.
+      # "//" marks an absolute rule, so the path follows without its leading slash.
+      # An Edit rule covers every file-editing tool (Write and NotebookEdit included);
+      # a Write(path) rule is rejected as unmatched, so only Edit rules are emitted.
+      deny: (map("Edit(//" + ltrimstr("/") + "/**)")
+             + (["\($home)/.ssh", "\($home)/.aws", "\($home)/.gnupg",
+                 "\($home)/.config/gcloud"] | map("Read(//" + ltrimstr("/") + "/**)"))),
+      allow: ([$repo_path, $handoffs] | map("Edit(//" + ltrimstr("/") + "/**)"))
+    },
+    sandbox: {
+      enabled: true,
+      # Never silently fall back to running unsandboxed if Seatbelt is unavailable.
+      failIfUnavailable: true,
+      # Bash runs prompt-free inside the boundary — this is what replaces the
+      # container plus --allow-dangerously-skip-permissions.
+      autoAllowBashIfSandboxed: true,
+      # Close the escape hatch that lets a blocked command be re-run unsandboxed.
+      allowUnsandboxedCommands: false,
+      # Go binaries need com.apple.trustd.agent to verify certificates; without this
+      # `gh` fails with "tls: failed to verify certificate: x509: OSStatus -26276".
+      enableWeakerNetworkIsolation: true,
+      filesystem: {
+        # Writes default to cwd + subdirectories, which is already the target repo.
+        # These add the inbox and the caches bundler needs.
+        allowWrite: [$handoffs, "~/.asdf/installs", "~/.asdf/shims",
+                     "~/.bundle", "~/.gem", "~/.cache"],
+        denyWrite: ["~/.zshrc", "~/.zprofile", "~/.bashrc", "~/.profile",
+                    "~/.gitconfig", "~/.config/gh", "~/.ssh"],
+        # Reads stay broad so cross-project context works, as under /work:ro.
+        denyRead: ["~/.ssh", "~/.aws", "~/.gnupg", "~/.config/gcloud"]
+      },
+      network: {
+        allowedDomains: ([
+          "api.anthropic.com", "claude.ai", "platform.claude.com",
+          "statsig.anthropic.com",
+          "github.com", "*.github.com",
+          "objects.githubusercontent.com", "raw.githubusercontent.com",
+          "codeload.github.com",
+          "rubygems.org", "*.rubygems.org",
+          "registry.npmjs.org", "*.npmjs.org"
+        ] + $extra)
+      }
+    }
+  }' > "${cfg}"
+
+# --- launch ------------------------------------------------------------------
+# Plan mode is a harness-level gate: Claude cannot edit until you approve a plan.
+# Unlike `cw` there is no --allow-dangerously-skip-permissions — the deny rules above
+# are the boundary for the file tools, and that flag would skip them.
+# --add-dir makes the whole workspace readable, restoring the container's `/work:ro`
+# context. Writes are still confined: the sandbox limits Bash to the cwd, and the Edit
+# deny rules above cover the file tools.
+cmd=(claude --settings "${cfg}" --add-dir "${RIBOSE_ROOT}" --permission-mode plan)
+[[ -n "$task" ]] && cmd+=("/feature ${task}")
+
+echo "cwl: project=${target}  (no container; writes confined to this repo plus ${CW_HANDOFFS})" >&2
+[[ -n "$task" ]] && echo "cwl: task=${task}" >&2
+
+cd "${repo_path}"
+
+# CWL_DRY_RUN=1 prints the resolved boundary and launch line instead of starting a
+# session — useful for checking the config without burning a session.
+if [[ -n "${CWL_DRY_RUN:-}" ]]; then
+  echo "cwl: cwd=${PWD}"
+  echo "cwl: settings:"
+  jq '.permissions.deny |= (.[0:3] + ["... \(length - 3) more"])' "${cfg}" | sed 's/^/  /'
+  echo "cwl: launch: ${cmd[*]}"
+  # Keep the generated settings so they can be inspected or reused for testing.
+  trap - EXIT
+  echo "cwl: settings kept at ${cfg}"
+  exit 0
+fi
+
+exec "${cmd[@]}"

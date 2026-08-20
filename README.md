@@ -15,6 +15,11 @@ Writes are physically confined to the chosen repo: the whole `workspace/` tree i
 **read-only** for context, and only the target repo is overlaid read-write (worktrees live
 inside it, under `.claude/worktrees/`).
 
+There are two launchers, with the same contract and the same workflow — they differ only in what
+enforces the boundary. `bin/cw` uses Docker (below). `bin/cwl` skips Docker entirely and runs
+Claude Code on the host inside the Anthropic Sandbox Runtime — see
+[Running without Docker](#running-without-docker-cwl).
+
 If a change needs another project, the workflow never edits it — it writes a self-contained
 **hand-off prompt** to the shared inbox at `workspace/HANDOFFS/` (created by `cw`, alongside the
 org dirs), named `<org>__<repo>__<slug>.md` — e.g. `relaton__relaton-bib__add-http-retry.md`.
@@ -93,6 +98,99 @@ docker compose -f compose.yml run --rm \
   dev claude --permission-mode plan --allow-dangerously-skip-permissions "/feature add retry logic"
 ```
 
+## Running without Docker (`cwl`)
+
+`bin/cwl` gives you the same single-project boundary without building or running a container.
+It uses **two layers**, because no single host mechanism covers everything:
+
+- **Bash and every process it spawns** — Claude Code's built-in sandbox (Seatbelt on macOS).
+  Kernel-enforced: writes confined to the target repo, network egress restricted to an allowlist.
+- **Read / Edit / Write, MCP servers, hooks** — these run inside the Claude Code process and the
+  sandbox does not reach them, so `cwl` generates an explicit `permissions.deny` rule for every
+  other repo in the workspace (~108 entries for a typical target).
+
+Because the file tools are gated by the permission layer rather than the kernel, `cwl` does **not**
+pass `--allow-dangerously-skip-permissions` the way `cw` does — that flag would skip the very deny
+rules doing the work. Bash still runs prompt-free via the sandbox's auto-allow, which is where
+nearly all the prompts came from anyway.
+
+### Setup
+
+```bash
+./bin/install-local    # symlinks /feature + mkworktree, checks prerequisites
+```
+
+It symlinks (not copies) `image/commands/feature.md` into `~/.claude/commands/` and
+`image/bin/mkworktree` into `~/.local/bin/`, so edits under `image/` take effect immediately —
+the same freshness the entrypoint's re-seed gives the container.
+
+### Use
+
+Identical to `cw`:
+
+```bash
+cd workspace/relaton/support
+cwl "add retry logic to the HTTP client"
+# or:  cwl relaton/support "add retry logic to the HTTP client"
+```
+
+`CWL_DRY_RUN=1 cwl <org>/<repo>` prints the resolved boundary and keeps the generated settings
+file for inspection. `CWL_EXTRA_DOMAINS="host,*.example.com"` widens the network allowlist.
+
+### The boundary
+
+| | `cw` (Docker) | `cwl` (native sandbox) |
+|---|---|---|
+| Writable | target repo, `HANDOFFS` | same, plus the gem caches bundler needs |
+| Readable | all of `workspace/` (`:ro`) | same, via `--add-dir`; minus `~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.config/gcloud` |
+| Bash confinement | mount namespace | Seatbelt, `failIfUnavailable: true` so it never silently degrades |
+| File-tool confinement | mount namespace (kernel) | `permissions.deny` rules (permission layer) |
+| Network | **unrestricted** | deny-all except an allowlist |
+| Toolchain | pinned in the image | the host's — so asdf gives each repo *its own* Ruby |
+
+Verified end to end: writing a sibling repo fails from both the Write tool ("directory denied by
+permission settings") and Bash ("Operation not permitted"); reading a sibling succeeds; writing the
+target repo and `HANDOFFS` succeeds; `curl https://example.com` is refused by the proxy while
+`git`, `gh`, `ruby`, `bundle` and rubygems.org all work.
+
+### The honest caveat
+
+This is the one place `cwl` is weaker than the container. In `cw`, a write to another repo is
+impossible because the filesystem is mounted read-only. In `cwl`, a write by the **file tools** is
+blocked by a permission rule — strong in practice, but policy rather than physics, and it depends
+on the deny list being complete. The list is regenerated from the actual directory contents on
+every launch, so a newly cloned repo is covered the next time you start a session.
+
+`sandbox.allowUnsandboxedCommands` is set to `false`, which closes the escape hatch that would
+otherwise let a blocked Bash command be re-run outside the sandbox.
+
+### Folder trust
+
+`cwl` pre-accepts the folder-trust prompt for the target repo by setting
+`projects[<repo>].hasTrustDialogAccepted` in `~/.claude.json` before launching — the same thing
+`entrypoint.sh` does inside the container. Trust is stored **per project directory**, so a repo you
+have never opened before would otherwise prompt on every start. The container never hits this:
+`~/.claude` is a persisted named volume, so the decision was recorded on first use.
+
+Note this also silently accepts any permissions a repo pre-approves in its own
+`.claude/settings.local.json` — `relaton/support`, for example, pre-approves `Bash(gem which:*)`
+and `Bash(gh api:*)`. `cw` behaves identically.
+
+### Why not the sandbox runtime?
+
+An earlier version of `cwl` wrapped the whole process in `@anthropic-ai/sandbox-runtime` (`srt`),
+which would have put the file tools inside a kernel boundary too. **It does not work for
+interactive sessions on macOS.** srt's Seatbelt profile permits the terminal `ioctl` only on a
+hardcoded path list (`/dev/tty`, `/dev/null`, `/dev/random`, …) that excludes the real controlling
+terminal, `/dev/ttysNNN`. So `tcsetattr` fails with `EPERM`, Claude Code can never turn echo off,
+and the result is unusable: the terminal's replies to Claude's capability probes land in the input
+box as literal escape text, and keys arrive kitty-encoded (`Ctrl-C` as `^[[27;5;99~`) while the
+parser expects raw bytes.
+
+Reopening stdio via `/dev/tty` — the one allowed path — does fix raw mode, but then Claude Code
+receives no keystrokes at all. Giving it a private pty would work, except the sandbox denies
+`openpty`. Headless (`-p`) runs under srt are fine; only the TUI is affected.
+
 ## How to organize your repos
 
 The container mounts the **parent** of `claude-container/` (the whole `workspace/` tree) read-only at
@@ -122,7 +220,9 @@ workspace/                       # ← mounted read-only at /work (cross-project
 |-------|------|
 | `Dockerfile` | ruby 3.4 + node 20 + git + gh + ripgrep + java (JRE for ruby-jing) + native-gem build deps + Claude Code; non-root `dev` user. |
 | `compose.yml` | mounts `workspace/` read-only at `/work`, the `HANDOFFS/` inbox read-write, host gh/git config, and a `claude-home` volume for login persistence. |
-| `bin/cw` | host launcher; resolves the target repo, adds the read-write overlay, and creates the hand-off inbox. |
+| `bin/cw` | host launcher (Docker); resolves the target repo, adds the read-write overlay, and creates the hand-off inbox. |
+| `bin/cwl` | host launcher (no Docker); same resolution, but generates per-session sandbox settings and file-tool deny rules. |
+| `bin/install-local` | one-time host setup for `cwl`: symlinks the skill and `mkworktree`, checks prerequisites. |
 | `image/commands/feature.md` | the `/feature` workflow skill (baked into the image). |
 | `image/settings.json` | container Claude defaults (model = opus). |
 | `entrypoint.sh` | sets `git safe.directory`, re-seeds the skill if the volume hid it. |
@@ -193,7 +293,15 @@ Your login is unaffected — it lives in the `claude-home` volume, not the image
   boundary and writes are limited to the single target repo. The isolation-choice gate and the
   "never commit/push/merge/PR — stop and hand back the diff" rule are enforced by the skill, not
   the permission layer, so they rely on Claude following the workflow prompt.
+- `cwl` deliberately does **not** use that flag. Its file-tool boundary is the generated
+  `permissions.deny` list, and `--allow-dangerously-skip-permissions` would skip it. Bash still
+  runs without prompts, via `autoAllowBashIfSandboxed`, so in practice the two feel the same.
 - Most repos need Ruby ≥ 3.3 (image ships 3.4). A repo pinned to an older Ruby may need a
-  tweaked base image.
+  tweaked base image — or just use `cwl`, which picks up the repo's own asdf Ruby.
+- The network allowlist (both launchers' sandboxes) matches on the client-supplied hostname
+  without inspecting TLS, so it is a guardrail against accidental egress, not a defence against
+  deliberate exfiltration.
+- `cwl`'s deny list is regenerated from the workspace contents at every launch, so a repo cloned
+  mid-session is not covered until the next start.
 - Each `cw` call is ephemeral (`run --rm`). Repos persist on the host mount; Claude login
   persists in the `claude-home` volume. In-container bundles are not cached between runs.
