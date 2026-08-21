@@ -89,6 +89,24 @@ passed, so `/feature` isn't auto-invoked; run it yourself when you're ready.
 To review the work, run the **`/diff`** command in the session — it walks you through the pending
 changes so you can review them before deciding what to commit, merge, or open a PR for.
 
+### Output style
+
+Both launchers append the same instruction to the system prompt, so a session reads the same way
+whichever one you start it with:
+
+- **ASD-STE100 Simplified Technical English** — the aerospace controlled-language standard.
+  Approved vocabulary, one meaning per word, active voice, a maximum of 20 words in an instruction
+  and 25 in a description, no gerund or participle used as a noun.
+- **A definition on first use** — any term you have not used yet in the conversation gets a
+  one-line explanation the first time it appears.
+
+Identifiers, paths, commands, flags and quoted output are carved out explicitly. Without that
+carve-out, STE rewriting mangles the very things that have to stay verbatim.
+
+The text lives in the `style_prompt` heredoc near the end of each launcher. Edit it there; the two
+copies are identical on purpose, in the same way both scripts carry their own copy of the repo
+resolution logic.
+
 ### Raw equivalent (no wrapper)
 
 ```bash
@@ -104,10 +122,11 @@ docker compose -f compose.yml run --rm \
 It uses **two layers**, because no single host mechanism covers everything:
 
 - **Bash and every process it spawns** — Claude Code's built-in sandbox (Seatbelt on macOS).
-  Kernel-enforced: writes confined to the target repo, network egress restricted to an allowlist.
+  Kernel-enforced: writes confined to the target repo, reads confined to the workspace plus a
+  short toolchain allowlist, network egress restricted to an allowlist.
 - **Read / Edit / Write, MCP servers, hooks** — these run inside the Claude Code process and the
-  sandbox does not reach them, so `cwl` generates an explicit `permissions.deny` rule for every
-  other repo in the workspace (~108 entries for a typical target).
+  sandbox does not reach them, so `cwl` generates explicit `permissions.deny` rules for every
+  other repo in the workspace and for everything outside it (~500 entries for a typical target).
 
 Because the file tools are gated by the permission layer rather than the kernel, `cwl` does **not**
 pass `--allow-dangerously-skip-permissions` the way `cw` does — that flag would skip the very deny
@@ -135,23 +154,51 @@ cwl "add retry logic to the HTTP client"
 ```
 
 `CWL_DRY_RUN=1 cwl <org>/<repo>` prints the resolved boundary and keeps the generated settings
-file for inspection. `CWL_EXTRA_DOMAINS="host,*.example.com"` widens the network allowlist.
+file for inspection. `CWL_EXTRA_DOMAINS="host,*.example.com"` widens the network allowlist, and
+`CWL_EXTRA_READ="/path/a,/path/b"` widens the read allowlist.
 
 ### The boundary
 
 | | `cw` (Docker) | `cwl` (native sandbox) |
 |---|---|---|
 | Writable | target repo, `HANDOFFS` | same, plus the gem caches bundler needs |
-| Readable | all of `workspace/` (`:ro`) | same, via `--add-dir`; minus `~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.config/gcloud` |
+| Readable | all of `workspace/` (`:ro`) | same, via `--add-dir`, plus the toolchain paths listed below; nothing else under `/Users` or `/Volumes` |
 | Bash confinement | mount namespace | Seatbelt, `failIfUnavailable: true` so it never silently degrades |
 | File-tool confinement | mount namespace (kernel) | `permissions.deny` rules (permission layer) |
 | Network | **unrestricted** | deny-all except an allowlist |
 | Toolchain | pinned in the image | the host's — so asdf gives each repo *its own* Ruby |
 
+#### The read allowlist
+
+Under `cw` the read boundary came for free: only `workspace/` was mounted, so nothing else on the
+host existed. `cwl` runs on the real filesystem, so `/Users` and `/Volumes` are denied wholesale and
+re-opened only for the workspace and the paths a session genuinely needs — the Ruby toolchain
+(`~/.asdf`, `~/.rvm`, `~/.gem`, `~/.gemrc`, `~/.bundle`, `~/.cache`, `~/.npm`), Claude Code's own
+binary and state (`~/.claude`, `~/.claude.json`, `~/.local/bin`, `~/.local/share/claude`,
+`~/.local/state`), and the config the Bash tool reads at startup (`~/.gitconfig`, `~/.config/gh`,
+the shell rc files). Add more with `CWL_EXTRA_READ`.
+
+The two layers express this differently. The sandbox honours `allowRead` over `denyRead`, so it
+needs only the two blanket denies. The Read *tool* is a permission-layer check where deny beats
+allow, so a blanket rule there could not be re-opened — `cwl` walks from `/Users` down to the
+workspace and denies everything standing beside the path, descending into any directory that is an
+ancestor of an allowed path (so `~/.config` is denied while `~/.config/gh` survives).
+
+`core.excludesfile` and friends are read out of your global git config at launch and allowed
+automatically — git warns on every invocation and silently drops those settings if it cannot read
+the file they point at, and hardcoding the filename would only work on one machine.
+
+`~/.local/share/gem` holds the RubyGems API key and stays denied, so `gem push` fails — exactly as
+it did in the container, which never had that file either.
+
 Verified end to end: writing a sibling repo fails from both the Write tool ("directory denied by
 permission settings") and Bash ("Operation not permitted"); reading a sibling succeeds; writing the
-target repo and `HANDOFFS` succeeds; `curl https://example.com` is refused by the proxy while
-`git`, `gh`, `ruby`, `bundle` and rubygems.org all work.
+target repo and `HANDOFFS` succeeds; reading `~/Documents` or `~/.ssh` fails from Bash and the Read
+tool alike while `~/.zshrc`, `~/.asdf` and the workspace stay readable; `curl https://example.com`
+is refused by the proxy while `git`, `gh`, `ruby`, `bundle` and rubygems.org all work.
+`bundle install` and `bundle update` both complete under the read boundary — including native
+extension compilation and git-sourced gems — and `rubygems.pkg.github.com` stays reachable for the
+private metanorma gems.
 
 ### The honest caveat
 

@@ -10,8 +10,8 @@
 # here it is two layers:
 #
 #   Bash and every process it spawns  -> Claude Code's built-in sandbox (Seatbelt on
-#     macOS). Kernel-enforced: writes are confined to the target repo, reads to
-#     everything except the denied secrets, and network egress to an allowlist.
+#     macOS). Kernel-enforced: writes are confined to the target repo, reads to the
+#     workspace plus a short toolchain allowlist, and network egress to an allowlist.
 #   Read / Edit / Write / MCP / hooks -> permission rules. These run inside the Claude
 #     Code process and are NOT covered by the sandbox, so the generated deny list below
 #     closes them off explicitly.
@@ -109,6 +109,76 @@ if ! jq -e --arg dir "${repo_path}" \
   fi
 fi
 
+# --- read boundary -----------------------------------------------------------
+# The container got its read boundary for free: only /work was mounted, so nothing else
+# on the host existed. Here the process runs on the real filesystem, so the boundary has
+# to be stated. Everything under /Users and /Volumes is denied except the workspace and
+# the paths a session genuinely needs: the Ruby toolchain (asdf/rvm hold the interpreter
+# AND the installed gems), Claude Code's own binary and state, and the shell/git/gh
+# config the Bash tool reads at startup. Each of these is also an allowWrite target or a
+# process the sandbox must exec, so denying them breaks the session outright.
+read_allow=(
+  "${RIBOSE_ROOT}"
+  "${HOME}/.asdf" "${HOME}/.asdfrc" "${HOME}/.tool-versions" "${HOME}/.rvm"
+  "${HOME}/.gem" "${HOME}/.gemrc" "${HOME}/.bundle" "${HOME}/.cache" "${HOME}/.npm"
+  "${HOME}/.claude" "${HOME}/.claude.json"
+  "${HOME}/.local/bin" "${HOME}/.local/share/claude" "${HOME}/.local/state"
+  "${HOME}/.local/share/ruby-advisory-db"
+  "${HOME}/.config/gh" "${HOME}/.gitconfig"
+  "${HOME}/.zshenv" "${HOME}/.zshrc" "${HOME}/.zprofile"
+  "${HOME}/.bashrc" "${HOME}/.profile"
+)
+# git's global config can point at files elsewhere in $HOME — core.excludesfile and
+# friends. Denying them is not fatal, but git warns on every invocation and silently drops
+# the setting, so resolve whatever this host actually configures instead of hardcoding
+# names. Only absolute paths are taken; a relative value is git-internal.
+while IFS= read -r p; do
+  p="${p/#\~/${HOME}}"
+  [[ "$p" == /* ]] && read_allow+=("$p")
+done < <({ git config --global --get-all core.excludesfile
+           git config --global --get-all core.attributesfile
+           git config --global --get-all core.hooksPath
+           git config --global --get-all init.templateDir; } 2>/dev/null || true)
+
+# CWL_EXTRA_READ=/path/a,/path/b re-opens more without editing this file — the read-side
+# counterpart to CWL_EXTRA_DOMAINS.
+if [[ -n "${CWL_EXTRA_READ:-}" ]]; then
+  while IFS= read -r p; do
+    [[ -n "$p" ]] && read_allow+=("$p")
+  done < <(printf '%s' "${CWL_EXTRA_READ}" | tr ',' '\n')
+fi
+
+# The sandbox honours allowRead over denyRead, so the kernel layer needs only the two
+# blanket denies. The Read TOOL is a permission-layer check where deny beats allow, so a
+# blanket rule there could not be re-opened — enumerate its siblings instead: walk from
+# /Users down to the workspace and deny everything standing beside the path.
+read_denies=(/Volumes)
+# At or below an allowed path — nothing to deny.
+read_allowed() {
+  local p="$1" a
+  for a in "${read_allow[@]}"; do
+    [[ "$p" == "$a" || "$p" == "$a"/* ]] && return 0
+  done
+  return 1
+}
+# A strict ancestor of one, e.g. ~/.config when only ~/.config/gh is allowed. Denying it
+# would bury the allowed child (deny beats allow), so descend and deny its siblings.
+read_pierce() {
+  local p="$1" a
+  for a in "${read_allow[@]}"; do
+    [[ "${a}/" == "${p}/"* ]] && return 0
+  done
+  return 1
+}
+walk=(/Users); w=0
+while (( w < ${#walk[@]} )); do
+  node="${walk[w]}"; w=$(( w + 1 ))
+  while IFS= read -r e; do
+    read_allowed "$e" && continue
+    if read_pierce "$e"; then walk+=("$e"); else read_denies+=("$e"); fi
+  done < <(find "$node" -maxdepth 1 -mindepth 1 2>/dev/null)
+done
+
 # --- every other project, for the file-tool deny list ------------------------
 # Deny rules take precedence over allow rules, so we cannot blanket-deny the workspace
 # and re-allow the target. Instead name every sibling explicitly: other org dirs whole,
@@ -138,11 +208,16 @@ if [[ -n "${CWL_EXTRA_DOMAINS:-}" ]]; then
   extra_domains="$(printf '%s' "${CWL_EXTRA_DOMAINS}" | tr ',' '\n' | jq -R . | jq -s -c .)"
 fi
 
+rallow_json="$(printf '%s\n' "${read_allow[@]}"  | jq -R . | jq -s -c .)"
+rdeny_json="$(printf '%s\n'  "${read_denies[@]}" | jq -R . | jq -s -c .)"
+
 printf '%s\n' "${others[@]}" | jq -R . | jq -s \
   --arg repo_path "${repo_path}" \
   --arg handoffs  "${CW_HANDOFFS}" \
   --arg home      "${HOME}" \
-  --argjson extra "${extra_domains}" \
+  --argjson extra  "${extra_domains}" \
+  --argjson rallow "${rallow_json}" \
+  --argjson rdeny  "${rdeny_json}" \
   '{
     model: "opus",
     includeCoAuthoredBy: false,
@@ -152,9 +227,15 @@ printf '%s\n' "${others[@]}" | jq -R . | jq -s \
       # "//" marks an absolute rule, so the path follows without its leading slash.
       # An Edit rule covers every file-editing tool (Write and NotebookEdit included);
       # a Write(path) rule is rejected as unmatched, so only Edit rules are emitted.
+      # A denied entry may be a plain file, which "/**" would not match, so emit the
+      # bare path too. The secret dirs stay named even though /Users covers them: they
+      # are the rules that must survive any later widening of the allowlist.
       deny: (map("Edit(//" + ltrimstr("/") + "/**)")
+             + ($rdeny | map("Read(//" + ltrimstr("/") + ")",
+                             "Read(//" + ltrimstr("/") + "/**)"))
              + (["\($home)/.ssh", "\($home)/.aws", "\($home)/.gnupg",
-                 "\($home)/.config/gcloud"] | map("Read(//" + ltrimstr("/") + "/**)"))),
+                 "\($home)/.config/gcloud",
+                 "\($home)/.local/share/gem"] | map("Read(//" + ltrimstr("/") + "/**)"))),
       allow: ([$repo_path, $handoffs] | map("Edit(//" + ltrimstr("/") + "/**)"))
     },
     sandbox: {
@@ -176,8 +257,15 @@ printf '%s\n' "${others[@]}" | jq -R . | jq -s \
                      "~/.bundle", "~/.gem", "~/.cache"],
         denyWrite: ["~/.zshrc", "~/.zprofile", "~/.bashrc", "~/.profile",
                     "~/.gitconfig", "~/.config/gh", "~/.ssh"],
-        # Reads stay broad so cross-project context works, as under /work:ro.
-        denyRead: ["~/.ssh", "~/.aws", "~/.gnupg", "~/.config/gcloud"]
+        # Nothing under /Users or /Volumes is readable except allowRead, which the
+        # sandbox applies with precedence over denyRead. System paths (/usr, /opt,
+        # /Library, /private) stay readable — that is the toolchain, not user data.
+        # ~/.local/share/gem holds the RubyGems API key; the container never had it
+        # either, so `gem push` fails the same way under both launchers.
+        denyRead: ["/Users", "/Volumes",
+                   "~/.ssh", "~/.aws", "~/.gnupg", "~/.config/gcloud",
+                   "~/.local/share/gem"],
+        allowRead: $rallow
       },
       network: {
         allowedDomains: ([
@@ -193,6 +281,30 @@ printf '%s\n' "${others[@]}" | jq -R . | jq -s \
     }
   }' > "${cfg}"
 
+# --- output style ------------------------------------------------------------
+# Appended to the system prompt so every session answers the same way: ASD-STE100
+# Simplified Technical English (the aerospace controlled-language standard — approved
+# vocabulary, one meaning per word, short active sentences), plus a definition for any
+# term the user has not used yet. The quoted heredoc delimiter keeps the text literal,
+# so no shell expansion happens inside it. The identifier carve-out matters: without it
+# STE rewriting mangles code, paths and command output.
+style_prompt="$(cat <<'STE'
+Write all conversational output in ASD-STE100 Simplified Technical English.
+Use the approved STE vocabulary. Give each word one meaning and one part of speech.
+Write short sentences: a maximum of 20 words for an instruction, 25 for a description.
+Write one instruction in each sentence. Use the active voice.
+Use the imperative mood for instructions. Use simple verb tenses.
+Do not use a gerund or a participle as a noun or an adjective.
+Keep a paragraph to a maximum of 6 sentences. Keep the articles a, an and the.
+Do not remove words to make a sentence shorter.
+Technical names and technical verbs from the code are approved words: never rewrite an
+identifier, a path, a command, a flag, or quoted output.
+Keep the output concise. Do not write a preamble or a recap.
+When you use a term that the user did not use before in this conversation, give a
+definition of one line at the first use.
+STE
+)"
+
 # --- launch ------------------------------------------------------------------
 # Plan mode is a harness-level gate: Claude cannot edit until you approve a plan.
 # Unlike `cw` there is no --allow-dangerously-skip-permissions — the deny rules above
@@ -200,7 +312,7 @@ printf '%s\n' "${others[@]}" | jq -R . | jq -s \
 # --add-dir makes the whole workspace readable, restoring the container's `/work:ro`
 # context. Writes are still confined: the sandbox limits Bash to the cwd, and the Edit
 # deny rules above cover the file tools.
-cmd=(claude --settings "${cfg}" --add-dir "${RIBOSE_ROOT}" --permission-mode plan)
+cmd=(claude --settings "${cfg}" --add-dir "${RIBOSE_ROOT}" --permission-mode plan --append-system-prompt "${style_prompt}")
 [[ -n "$task" ]] && cmd+=("/feature ${task}")
 
 echo "cwl: project=${target}  (no container; writes confined to this repo plus ${CW_HANDOFFS})" >&2

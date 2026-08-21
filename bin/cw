@@ -55,13 +55,37 @@ mkdir -p "${RIBOSE_ROOT}/HANDOFFS"
 export GH_TOKEN="${GH_TOKEN:-$(gh auth token 2>/dev/null || true)}"
 [[ -z "${GH_TOKEN}" ]] && echo "cw: warning — no GH_TOKEN (run 'gh auth login'); pushes will fail." >&2
 
+# --- output style ------------------------------------------------------------
+# Appended to the system prompt so every session answers the same way: ASD-STE100
+# Simplified Technical English (the aerospace controlled-language standard — approved
+# vocabulary, one meaning per word, short active sentences), plus a definition for any
+# term the user has not used yet. The quoted heredoc delimiter keeps the text literal,
+# so no shell expansion happens inside it. The identifier carve-out matters: without it
+# STE rewriting mangles code, paths and command output.
+style_prompt="$(cat <<'STE'
+Write all conversational output in ASD-STE100 Simplified Technical English.
+Use the approved STE vocabulary. Give each word one meaning and one part of speech.
+Write short sentences: a maximum of 20 words for an instruction, 25 for a description.
+Write one instruction in each sentence. Use the active voice.
+Use the imperative mood for instructions. Use simple verb tenses.
+Do not use a gerund or a participle as a noun or an adjective.
+Keep a paragraph to a maximum of 6 sentences. Keep the articles a, an and the.
+Do not remove words to make a sentence shorter.
+Technical names and technical verbs from the code are approved words: never rewrite an
+identifier, a path, a command, a flag, or quoted output.
+Keep the output concise. Do not write a preamble or a recap.
+When you use a term that the user did not use before in this conversation, give a
+definition of one line at the first use.
+STE
+)"
+
 # --- assemble the claude command --------------------------------------------
 # Start in PLAN mode (harness-enforced: Claude cannot edit until you approve a
 # plan) so it can never start coding before discussing the plan. Pair it with
 # --allow-dangerously-skip-permissions so that, after you approve, you can run
 # the implementation autonomously without per-edit prompts (approve the plan with
 # "accept edits", or Shift+Tab to the bypass mode it adds to the cycle).
-cmd=(claude --permission-mode plan --allow-dangerously-skip-permissions)
+cmd=(claude --permission-mode plan --allow-dangerously-skip-permissions --append-system-prompt "${style_prompt}")
 if [[ -n "$task" ]]; then
   cmd+=("/feature ${task}")
 fi
