@@ -274,6 +274,10 @@ printf '%s\n' "${others[@]}" | jq -R . | jq -s \
           "github.com", "*.github.com",
           "objects.githubusercontent.com", "raw.githubusercontent.com",
           "codeload.github.com",
+          # Actions logs and artifacts: `gh run view --log` calls the receiver, then
+          # follows a signed redirect into Azure storage. Both hosts are necessary.
+          # The storage account name rotates, so it must be a wildcard.
+          "*.actions.githubusercontent.com", "*.blob.core.windows.net",
           "rubygems.org", "*.rubygems.org",
           "registry.npmjs.org", "*.npmjs.org"
         ] + $extra)

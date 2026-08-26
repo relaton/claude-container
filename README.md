@@ -17,7 +17,7 @@ inside it, under `.claude/worktrees/`).
 
 There are two launchers, with the same contract and the same workflow — they differ only in what
 enforces the boundary. `bin/cw` uses Docker (below). `bin/cwl` skips Docker entirely and runs
-Claude Code on the host inside the Anthropic Sandbox Runtime — see
+Claude Code on the host inside Claude Code's own built-in sandbox — see
 [Running without Docker](#running-without-docker-cwl).
 
 If a change needs another project, the workflow never edits it — it writes a self-contained
@@ -198,7 +198,49 @@ tool alike while `~/.zshrc`, `~/.asdf` and the workspace stay readable; `curl ht
 is refused by the proxy while `git`, `gh`, `ruby`, `bundle` and rubygems.org all work.
 `bundle install` and `bundle update` both complete under the read boundary — including native
 extension compilation and git-sourced gems — and `rubygems.pkg.github.com` stays reachable for the
-private metanorma gems.
+private metanorma gems. `gh run view --log-failed --job <id>` prints the job log rather than a
+network denial.
+
+#### The network allowlist
+
+Egress is deny-all. `cwl` opens four groups:
+
+| Group | Domains |
+|---|---|
+| Anthropic | `api.anthropic.com`, `claude.ai`, `platform.claude.com`, `statsig.anthropic.com` |
+| GitHub | `github.com`, `*.github.com`, `objects.githubusercontent.com`, `raw.githubusercontent.com`, `codeload.github.com` |
+| Actions logs and artifacts | `*.actions.githubusercontent.com`, `*.blob.core.windows.net` |
+| Package registries | `rubygems.org`, `*.rubygems.org`, `registry.npmjs.org`, `*.npmjs.org` |
+
+`github.com` and `githubusercontent.com` are different apex domains, so `*.github.com` does not
+cover the content hosts — each one has to be named.
+
+The Actions pair is the reason a session can read CI. `gh run view --log` calls
+`results-receiver.actions.githubusercontent.com`, then follows a signed redirect into
+`productionresultssaNN.blob.core.windows.net`. Deny either one and the session sees only
+`Process completed with exit code 1`, which is the least useful line in the log. The storage
+account number rotates, so that entry has to be a wildcard; the cost is that every Azure blob
+account is reachable. See the caveat below on what the allowlist is and is not.
+
+Anything else goes in `CWL_EXTRA_DOMAINS`.
+
+This allowlist reaches `cwl` sessions only. `cwl` passes it with `--settings`, so a plain `claude`
+session started by hand never sees it and falls back to your global `~/.claude/settings.json`. If
+that file sets `sandbox.network.strictAllowlist` without an `allowedDomains` list, the plain
+session denies every host and does not prompt, which looks exactly like this bug and is not fixed
+by anything in this repo. Give the global file its own list:
+
+```json
+"sandbox": {
+  "network": {
+    "strictAllowlist": true,
+    "allowedDomains": ["*.actions.githubusercontent.com", "*.blob.core.windows.net"]
+  }
+}
+```
+
+Domains merge across settings sources, so this widens `cwl` too — by the same two hosts it already
+carries.
 
 ### The honest caveat
 
