@@ -36,7 +36,10 @@ die() { echo "cwl: $*" >&2; exit 1; }
 # --- resolve the target repo (org/repo) -------------------------------------
 # Same contract as `cw`, so the two launchers are interchangeable.
 target=""
-if [[ $# -ge 1 && "$1" == */* ]]; then
+# The pattern is deliberately narrow: exactly two path segments of the characters
+# GitHub allows in a name. A task description that holds a slash — a URL, for
+# example — must not look like a repo name here.
+if [[ $# -ge 1 && "$1" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]]; then
   # An explicit org/repo that does not exist is a typo, not part of the task
   # description — fail loudly instead of silently falling back to $PWD.
   [[ -d "${RIBOSE_ROOT}/$1" ]] || die "no such project: ${RIBOSE_ROOT}/$1"
