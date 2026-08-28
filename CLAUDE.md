@@ -50,6 +50,13 @@ does not.
 **`github.com` and `githubusercontent.com` are different apex domains.** `*.github.com` never
 covers a content host. Name each one.
 
+**The `/feature` cleanup is the only place the workflow removes anything.** Step 9 in
+`image/commands/feature.md` drops a worktree and its branch, and it archives an implemented hand-off
+into `$CW_HANDOFFS/done/`. Three properties hold it in place, so keep all three in any edit: the
+user approves the list first (the third mandatory gate), the parent branch is updated from the
+remote **before** the branch is deleted, and a hand-off is **moved**, never deleted. `git branch -D`
+is allowed only on `gh` evidence of a merge, because a squash merge defeats `git branch -d`.
+
 **The global `~/.claude/settings.json` is a separate boundary.** `cwl` passes its own allowlist, so
 a `cwl` session is unaffected by it. A plain `claude` session sees only the global file. A fix in
 `bin/cwl` does not reach plain sessions, and the reverse is also true.

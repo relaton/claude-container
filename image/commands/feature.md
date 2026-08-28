@@ -1,5 +1,5 @@
 ---
-description: Plan → choose isolation (worktree/branch) → TDD implement → test → review → docs → show the diff → stop (you drive commit/PR), scoped to a single repo.
+description: Plan → choose isolation (worktree/branch) → TDD implement → test → review → docs → show the diff → stop (you drive commit/PR) → drop merged worktrees, scoped to a single repo.
 argument-hint: <task description>
 ---
 
@@ -16,24 +16,31 @@ obvious final step. **The only exception is an explicit, unambiguous instruction
 (e.g. "commit this", "commit and push", "open a PR") — then you may run exactly the git/`gh` action
 they asked for, and nothing more.
 
+**DO NOT DESTROY — unless Step 9 says you may.** The same rule covers `git worktree remove`,
+`git branch -d`, `git branch -D`, `git pull`, and any `mv` or `rm` of a hand-off file. Run them only
+through the gated cleanup in Step 9, and only after the user approves the list. The cleanup's pull
+is always `--ff-only`; it never merges.
+
 ## Hard rules (read first)
 
 - **Single-project boundary.** The current repo (your working directory) is the ONLY project
   you may modify. Every other project in the workspace is **readable but not writable** — you may
   read them for context, but any write to them will fail. **Never** try to edit them.
   The one exception is the shared inbox at `$CW_HANDOFFS`, which IS writable: it takes
-  hand-off prompts (Step 8) and nothing else. Never put code there, and never treat it as a
-  way around the boundary.
+  hand-off prompts (Step 8), and Step 9 moves a finished one into `$CW_HANDOFFS/done/`. Nothing
+  else. Never put code there, and never treat it as a way around the boundary.
 - **You stop when the work is done — you do not finalize it on your own.** Your job ends at Step 7:
-  implement, test, review, then show the user the diff and stop. **Do not `git commit`, `git add`,
-  `git push`, `git merge`, `gh pr create`, or `gh pr merge` on your own initiative** — leave the
-  changes as uncommitted working-tree edits on the chosen branch/worktree. The user reviews them and
-  decides what to commit, merge, or open a PR for — that is their call, in their own session or by
-  hand. **If the user explicitly asks you to commit, push, merge, or open a PR, do it** — perform
-  exactly the action requested, then stop.
+  implement, test, review, then show the user the diff and stop. (Steps 8 and 9 are conditional —
+  they run only when the task needs a hand-off, or when the user approves a cleanup.) **Do not
+  `git commit`, `git add`, `git push`, `git merge`, `gh pr create`, or `gh pr merge` on your own
+  initiative** — leave the changes as uncommitted working-tree edits on the chosen branch/worktree.
+  The user reviews them and decides what to commit, merge, or open a PR for — that is their call, in
+  their own session or by hand. **If the user explicitly asks you to commit, push, merge, or open a
+  PR, do it** — perform exactly the action requested, then stop.
 - **Mandatory human gates** — you MUST stop and use `AskUserQuestion` (or wait for an explicit
   user reply) at each of these, and never skip them:
-  1. plan confirmation, 2. isolation choice (worktree/branch).
+  1. plan confirmation, 2. isolation choice (worktree/branch), 3. cleanup confirmation — before you
+  remove any worktree, delete any branch, or move any hand-off file.
 - **You start in plan mode — that IS the plan gate.** The session launches in plan mode, so the
   harness blocks every edit until you present a plan and the user approves it (Step 1). Don't try
   to work around it. **Approving the plan is NOT authorization to edit in place:** the moment you
@@ -58,8 +65,35 @@ working directory.
 **Check the hand-off inbox first** for work another session addressed to this repo:
 `ls "$CW_HANDOFFS"/<org>__<repo>__*.md 2>/dev/null`. If any exist, read them and tell the user
 what is pending. If one covers or overlaps the requested task, fold it into the plan and say so;
-otherwise just list them as known pending work and carry on with the task you were given. Do
-**not** delete or modify a hand-off file — the user decides when it is done.
+otherwise just list them as known pending work and carry on with the task you were given. Never
+delete a hand-off file. Step 9 archives one into `$CW_HANDOFFS/done/`, and only with the user's
+approval — nothing else touches the inbox.
+
+**Then sweep for finished worktrees** left by earlier sessions. A merged PR leaves its worktree and
+branch behind, so they collect. Run the survey in the **main repo root**:
+
+- `git fetch origin --prune` first. Both merge tests read stale refs otherwise, and a branch merged
+  since the last fetch then looks unmerged.
+- `git worktree list --porcelain` — this is the source of truth. Do **not** use `find`: it picks up
+  sandbox artifacts such as `.claude/worktrees/.claude/.cc-writes` and reports them as worktrees.
+  Skip the main worktree; consider only paths under `.claude/worktrees/`.
+- `git worktree prune` — safe to run always. It clears registrations whose directory is already
+  gone, and it never touches a live worktree.
+- A directory under `.claude/worktrees/` that `git worktree list` does **not** name is an orphan.
+  Report it and leave it alone — you cannot tell what is in it. Ignore `.claude/worktrees/.claude/`,
+  which is a sandbox artifact and not a worktree.
+- For each remaining worktree branch, decide **finished**:
+  1. `gh pr list --head <branch> --state all --json number,state,mergedAt`. A non-null `mergedAt`
+     means the PR is merged. Use `pr list`, not `pr view` — `pr view` errors when no PR exists.
+  2. If there is no PR, or `gh` fails, fall back to
+     `git branch --merged <default-branch> --list <branch>`.
+  3. A closed but unmerged PR is reported only. Never drop it.
+- For each finished branch, decide **safe to drop**: `git -C <worktree> status --porcelain` is empty,
+  **and** `git log --oneline <default-branch>..<branch>` shows no commit that the merge did not take.
+  A dirty or ahead worktree is reported and kept, whatever the PR says.
+- Report the result with the pending hand-offs. If anything is finished and safe, **GATE**: ask the
+  user with `AskUserQuestion` which worktrees to drop, then run Step 9 on the approved ones before
+  you continue with the plan.
 
 Research with the `Explore` agent and by reading relevant files (including
 read-only related projects if useful). Produce a concise plan: goal, files to change, test
@@ -95,9 +129,10 @@ Let `<branch>` be the type-prefixed branch name from the plan (e.g. `feat/add-ht
 - **Option 2** — `git checkout -b <branch>` in the repo root.
 - **Option 3** — stay on the current branch; do nothing here.
 
-Record the **working branch** (`<branch>` for options 1–2, else the current branch) and
-**whether a worktree was created** — the final hand-back (Step 7) reports both. Do all
-subsequent work from the chosen location.
+Record three facts: the **working branch** (`<branch>` for options 1–2, else the current branch),
+the **parent branch** (the branch you cut from — normally the repo's default branch), and
+**whether a worktree was created**. The final hand-back (Step 7) reports the first and the third;
+the cleanup (Step 9) uses all three. Do all subsequent work from the chosen location.
 
 ### 3. Implement — TDD (no questions)
 **Self-check before the first edit:** confirm you are where Step 2 decided — inside the worktree
@@ -137,7 +172,9 @@ Present a clear summary so the user can review and decide what to do next:
 - the **changed-files list** (`git status --porcelain`) and a **diff overview** (`git diff --stat`,
   plus the key hunks so they can see what changed);
 - the **test result** (and rubocop, if run);
-- any **cross-project hand-off** files written to `$CW_HANDOFFS/` in Step 8, by full path.
+- any **cross-project hand-off** files written to `$CW_HANDOFFS/` in Step 8, by full path;
+- what the Step 1 sweep found — the worktrees Step 9 dropped, the ones it kept and why, or that
+  there was nothing to drop.
 
 Then stop and let the user take it from here — by default they will commit / merge / open a PR
 themselves when and how they choose. Do not ask "should I commit?" or offer to do it; handing back
@@ -158,3 +195,66 @@ gem):
 - Mention the file (by full path) in the Step 7 summary. Tell the user they can pick it up later
   by starting a session in `<other-org>/<other-repo>` (`cw` or `cwl`) — that session reads the inbox at Step 1 and
   will surface the hand-off itself, so there is nothing to paste.
+- A hand-off you write is never yours to retire. The **target** repo's session archives it in its
+  own Step 9, once the change is merged there.
+
+### 9. Cleanup — drop a finished worktree (GATE)
+This step is a procedure, not a stage. Two things call it, and nothing else:
+- the **Step 1 sweep**, after the user approves the list of finished worktrees;
+- the **end of an in-session merge** — the user explicitly told this session to open or merge a PR,
+  and `gh pr view --json state,mergedAt` shows it merged.
+
+Never start it on your own initiative, and never without the Step 1 gate. If the user did not
+approve a specific worktree, leave it alone.
+
+**First, update the parent branch.** The merge landed on the remote, so the local parent branch is
+behind, and the branch you are about to delete holds the only local copy of that work. Update the
+parent **before** the removal:
+
+```
+git fetch origin --prune
+git pull --ff-only                  # only when the main checkout is ON <parent> and clean
+git fetch origin <parent>:<parent>  # otherwise — fast-forwards the ref, no checkout change
+```
+
+The two cases are separate because `git fetch origin <parent>:<parent>` fails when `<parent>` is the
+checked-out branch. Never pull a dirty checkout, and never merge. If the checkout is dirty, or the
+fast-forward is refused because the local parent has diverged, report it and **stop the cleanup**.
+The worktree and the branch stay until the user resolves it.
+
+**Then remove.** Run this from the main repo root — `cd` out of the worktree first, because git
+refuses to remove the worktree you are standing in:
+
+```
+git worktree remove .claude/worktrees/<branch>     # never --force; if it refuses, stop and report
+git branch -d <branch>                             # see the note below
+git worktree prune
+rmdir .claude/worktrees/<type> 2>/dev/null || true  # <type>/ is left empty
+```
+
+`git branch -d` usually **refuses a squash-merged branch**. The squash writes a new commit, so the
+branch is not an ancestor of the parent and git cannot see the merge. It still succeeds while
+`origin/<branch>` exists, because git also accepts "merged to its upstream" — but GitHub deletes the
+head branch on merge, and the `--prune` above then drops that ref, so the refusal is the normal case.
+Escalate to `git branch -D` **only** when `gh` reported a non-null `mergedAt` for that branch. Never
+use `-D` on the `git branch --merged` fallback alone.
+
+Branch names are `<type>/<slug>`, so the worktree directory nests one level and the `<type>/` parent
+survives the removal — hence the `rmdir`. `git worktree remove` refuses a worktree with modified or
+untracked files; that refusal is the safety net, so never reach for `--force`.
+
+**Then archive the hand-offs this repo implemented.** Inbound only:
+
+- List them with `ls "$CW_HANDOFFS"/<org>__<repo>__*` — with **no** `.md` filter. A hand-off may
+  have companion files (`....files.txt`, `....tsv`), and a file moves with its companions.
+- Read each candidate and compare it to what the merged branch actually did. Only a hand-off the
+  branch implemented is a candidate. Name the candidates in the gate; the user confirms each one.
+- Archive, never delete:
+  ```
+  mkdir -p "$CW_HANDOFFS/done"
+  mv "$CW_HANDOFFS/<org>__<repo>__<slug>".* "$CW_HANDOFFS/done/"
+  ```
+  `done/` is a subdirectory, so the Step 1 glob `<org>__<repo>__*.md` no longer finds it.
+- Hand-offs **this** session wrote for other repos are never touched here. See Step 8.
+
+Report what you dropped and what you kept, in the Step 7 summary.

@@ -7,6 +7,10 @@ A Docker container that runs **Claude Code** to work on **one** of the sibling p
 > no questions) → **run tests** → **review** → update **CLAUDE.md/docs** if needed →
 > **show you the diff and stop.**
 
+The next session you start in that repo picks up where you left off: it looks for worktrees whose
+PR is merged and offers to **drop the worktree, the branch, and the hand-offs the work implemented**.
+It asks first, and it never touches a worktree that still has uncommitted changes.
+
 Claude never commits, pushes, merges, or opens a PR. It leaves the finished work as **uncommitted
 changes** on the chosen branch/worktree and hands it back to you — you decide what to commit, merge,
 or open a PR for, in your own time.
@@ -26,7 +30,9 @@ org dirs), named `<org>__<repo>__<slug>.md` — e.g. `relaton__relaton-bib__add-
 Mounted at `/work/HANDOFFS`, this inbox is the only writable spot outside the target repo, and it
 takes hand-off prompts only, never code. Next time you run `cw` in the repo a hand-off is addressed
 to, that session reads its pending hand-offs while planning and tells you about them — so there's
-nothing to copy around by hand. Delete a hand-off file when it's done; nothing else will.
+nothing to copy around by hand. When the merged work implements a hand-off, that session offers to
+archive the file into `workspace/HANDOFFS/done/` — it asks first, and it moves the file rather than
+deleting it. Nothing else retires a hand-off, so you can always do it by hand.
 
 ## One-time setup
 
@@ -290,6 +296,7 @@ your project repos side by side under one root, with each repo two levels down a
 workspace/                       # ← mounted read-only at /work (cross-project context)
 ├── claude-container/         # this tooling repo (a sibling, not a project to work on)
 ├── HANDOFFS/                 # shared cross-project hand-off inbox (writable at /work/HANDOFFS)
+│   └── done/                 #   └─ archive for hand-offs that are implemented and merged
 ├── relaton/                  # <org>
 │   ├── relaton-bib/          #   └─ <repo>   → cw relaton/relaton-bib "..."
 │   └── relaton-cli/          #   └─ <repo>
@@ -345,8 +352,24 @@ location under `.claude/worktrees/`, a conventional `<type>/<slug>` branch name 
 > Your host git (2.50) understands it; very old host git/libgit2 tooling may not.
 
 The worktree and branch are left in place when Claude stops, so you can review and finalize the
-changes from the host. Remove the worktree yourself once you're done (`git worktree remove
-.claude/worktrees/<branch>`).
+changes from the host. You commit, open the PR, and merge in your own time.
+
+**Cleanup happens on the next run.** When you next start `cw` or `cwl` in that repo, the workflow
+surveys `.claude/worktrees/` before it plans anything. For each worktree it asks GitHub whether the
+branch's PR is merged (`gh pr list --head <branch>`), and falls back to `git branch --merged` when
+there is no PR — the `gh` check first, because a **squash merge** leaves git itself unable to see
+the merge. It then offers to drop the finished ones. Approve, and it:
+
+1. updates the parent branch from the remote (`git pull --ff-only`, or `git fetch origin
+   <parent>:<parent>` when the checkout is on another branch) — **before** the removal, because the
+   branch about to be deleted holds the only local copy of the merged work;
+2. runs `git worktree remove`, deletes the branch, runs `git worktree prune`, and removes the empty
+   `<type>/` parent directory that a slashed branch name leaves behind;
+3. archives the hand-offs that the merged branch implemented into `HANDOFFS/done/`.
+
+It asks before each of these, never uses `git worktree remove --force`, and keeps any worktree that
+still has uncommitted changes or unmerged commits. So nothing disappears without your say-so — and
+you can still do it by hand (`git worktree remove .claude/worktrees/<branch>`).
 
 ## Updating Claude Code
 
