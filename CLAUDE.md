@@ -40,7 +40,9 @@ form the file boundary. `cw` can use it because the mount namespace does the wor
 
 **Edit the settings in the jq filter in `bin/cwl`** (around line 221). The launcher writes a
 per-session `settings.json` into a temp directory and passes it with `--settings`. Do not put
-launcher policy in `image/settings.json`; that file reaches `cw` only.
+launcher policy in `image/settings.json`; that file reaches `cw` only. The whole filter is one
+single-quoted shell string, so no comment in it may contain an apostrophe. One apostrophe closes
+the string, and jq then fails to compile.
 
 **Keep one label in front of a `*.` domain.** The docs guarantee only that a leading `*.` is
 honoured. They do not state how many labels it matches. `*.actions.githubusercontent.com` matches
@@ -56,6 +58,12 @@ into `$CW_HANDOFFS/done/`. Three properties hold it in place, so keep all three 
 user approves the list first (the third mandatory gate), the parent branch is updated from the
 remote **before** the branch is deleted, and a hand-off is **moved**, never deleted. `git branch -D`
 is allowed only on `gh` evidence of a merge, because a squash merge defeats `git branch -d`.
+`ExitWorktree` with `action: "remove"` destroys the same worktree and branch outside the gate, so
+the workflow bans it. Step 9 leaves the worktree with `action: "keep"`, then removes it in the gate.
+
+**`cwl` names the repo in `sandbox.filesystem.allowWrite`.** Seatbelt writes default to the cwd,
+and `/feature` moves the session into `.claude/worktrees/<branch>` with `EnterWorktree`. Git in a
+worktree still writes to `.git/worktrees/` in the main repo, so the repo path must stay explicit.
 
 **The global `~/.claude/settings.json` is a separate boundary.** `cwl` passes its own allowlist, so
 a `cwl` session is unaffected by it. A plain `claude` session sees only the global file. A fix in

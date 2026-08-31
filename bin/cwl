@@ -254,9 +254,13 @@ printf '%s\n' "${others[@]}" | jq -R . | jq -s \
       # `gh` fails with "tls: failed to verify certificate: x509: OSStatus -26276".
       enableWeakerNetworkIsolation: true,
       filesystem: {
-        # Writes default to cwd + subdirectories, which is already the target repo.
+        # Writes default to cwd + subdirectories. The repo is named anyway, because
+        # /feature moves the session into .claude/worktrees/<branch> and cwd is then
+        # the worktree — git there still writes to .git/worktrees/ in the main repo.
+        # Keep every comment in this filter free of an apostrophe: the whole filter
+        # is one single-quoted shell string, and an apostrophe closes it.
         # These add the inbox and the caches bundler needs.
-        allowWrite: [$handoffs, "~/.asdf/installs", "~/.asdf/shims",
+        allowWrite: [$repo_path, $handoffs, "~/.asdf/installs", "~/.asdf/shims",
                      "~/.bundle", "~/.gem", "~/.cache"],
         denyWrite: ["~/.zshrc", "~/.zprofile", "~/.bashrc", "~/.profile",
                     "~/.gitconfig", "~/.config/gh", "~/.ssh"],

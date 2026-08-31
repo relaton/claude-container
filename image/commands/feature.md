@@ -19,7 +19,8 @@ they asked for, and nothing more.
 **DO NOT DESTROY — unless Step 9 says you may.** The same rule covers `git worktree remove`,
 `git branch -d`, `git branch -D`, `git pull`, and any `mv` or `rm` of a hand-off file. Run them only
 through the gated cleanup in Step 9, and only after the user approves the list. The cleanup's pull
-is always `--ff-only`; it never merges.
+is always `--ff-only`; it never merges. **Never call `ExitWorktree` with `action: "remove"`.** That
+deletes the worktree and the branch outside the gate. Step 9 removes a worktree, and only there.
 
 ## Hard rules (read first)
 
@@ -122,8 +123,18 @@ Let `<branch>` be the type-prefixed branch name from the plan (e.g. `feat/add-ht
   both the container (`/work/...`) and the host (`/Users/...`):
   ```
   mkworktree <branch>          # creates .claude/worktrees/<branch> on branch <branch>
-  cd .claude/worktrees/<branch>
   ```
+  Then **move the session into it** with the `EnterWorktree` tool. Set `path` to the absolute
+  worktree path — `$(git rev-parse --show-toplevel)/.claude/worktrees/<branch>` — and never set
+  `name`: `mkworktree` already created the worktree, and `name` creates a second one without the
+  relative links. `EnterWorktree` moves the **session** directory, so the file tools, the loaded
+  `CLAUDE.md`, and the plans directory all follow. A `cd` moves the Bash tool only and leaves the
+  rest of the session in the main checkout, so `cd` is the fallback, not the method.
+  `EnterWorktree` asks for an explicit instruction to work in a worktree. Option 1 at this gate
+  **is** that instruction: the user chose the worktree.
+  If the tool is unavailable, or it refuses the path, run `cd .claude/worktrees/<branch>` instead
+  and report the fallback in the Step 7 summary.
+
   Confirm: `git rev-parse --show-toplevel` prints a path ending in `/.claude/worktrees/<branch>`,
   and `git status --porcelain` in the main repo does **not** list `.claude/`.
 - **Option 2** — `git checkout -b <branch>` in the repo root.
@@ -136,7 +147,8 @@ the cleanup (Step 9) uses all three. Do all subsequent work from the chosen loca
 
 ### 3. Implement — TDD (no questions)
 **Self-check before the first edit:** confirm you are where Step 2 decided — inside the worktree
-(Option 1), on the new branch via `git branch --show-current` (Option 2), or the current branch
+(Option 1: `pwd` and `git rev-parse --show-toplevel` both end in `/.claude/worktrees/<branch>`),
+on the new branch via `git branch --show-current` (Option 2), or the current branch
 the user explicitly approved (Option 3). If Step 2 hasn't happened yet, stop and do it now —
 never default to editing the checked-out branch.
 Tests-first loop:
@@ -168,7 +180,10 @@ an explicit user instruction to commit/push/merge/open a PR — then do exactly 
 Present a clear summary so the user can review and decide what to do next:
 - the **working branch** and whether a **worktree** was created;
 - if a worktree was used, its **host path** (`.claude/worktrees/<branch>`) so the user can open the
-  files directly on their machine;
+  files directly on their machine, and the fact that the session itself runs there. Tell the user
+  that Claude Code asks to **keep or remove** the worktree when the session ends, and that the
+  answer is **keep** — this workflow leaves the worktree and the branch in place. The user's own
+  shell directory does not change; the launcher moves only its own process;
 - the **changed-files list** (`git status --porcelain`) and a **diff overview** (`git diff --stat`,
   plus the key hunks so they can see what changed);
 - the **test result** (and rubocop, if run);
@@ -222,8 +237,12 @@ checked-out branch. Never pull a dirty checkout, and never merge. If the checkou
 fast-forward is refused because the local parent has diverged, report it and **stop the cleanup**.
 The worktree and the branch stay until the user resolves it.
 
-**Then remove.** Run this from the main repo root — `cd` out of the worktree first, because git
-refuses to remove the worktree you are standing in:
+**Then remove.** Run this from the main repo root, because git refuses to remove the worktree you
+are standing in. If the session entered the worktree with `EnterWorktree` (Step 2, Option 1),
+leave it first with `ExitWorktree` and `action: "keep"`. Use **`keep`, never `remove`**:
+`ExitWorktree` does not remove a worktree entered by `path`, and `remove` would skip this gated
+procedure — the parent-branch update above, and the `gh`-evidence rule below. If the session only
+ran `cd` into the worktree, `cd` back out:
 
 ```
 git worktree remove .claude/worktrees/<branch>     # never --force; if it refuses, stop and report

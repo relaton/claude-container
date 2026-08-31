@@ -336,6 +336,13 @@ The dir is excluded locally via `.git/info/exclude`, so it never shows as untrac
 committed (no change to the repo's tracked `.gitignore`). Living inside the target repo, the
 worktree rides its read-write mount — no separate mount needed.
 
+**The session moves in with it.** The workflow enters the worktree with Claude Code's
+`EnterWorktree` tool, not with a `cd`, so every later tool call — file reads and edits, the loaded
+`CLAUDE.md`, the plans directory — runs in the worktree. Your own shell is untouched: the launcher
+changes the directory in its own process, so your terminal stays where you started it. When the
+session ends, Claude Code asks whether to **keep or remove** the worktree. Answer **keep**: the
+worktree and the branch are meant to survive, and the cleanup below is where they are dropped.
+
 **Host compatibility.** The container mounts the repo at `/work/...` but on the host it's at
 `/Users/.../workspace/...`. Git normally bakes an absolute path into a worktree's `.git` link, which
 would make host-side `git status` fail (`not a git repository: /work/...`). The container ships
