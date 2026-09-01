@@ -287,8 +287,10 @@ printf '%s\n' "${others[@]}" | jq -R . | jq -s \
           "*.actions.githubusercontent.com", "*.blob.core.windows.net",
           "rubygems.org", "*.rubygems.org",
           "registry.npmjs.org", "*.npmjs.org",
-          # ETSI publishes the standards that the relaton work refers to.
-          "www.etsi.org"
+          # ETSI and ITU publish the standards that the relaton work refers to.
+          "www.etsi.org", "www.itu.int",
+          # Crossref resolves the DOI metadata that relaton needs.
+          "api.crossref.org"
         ] + $extra)
       }
     }
