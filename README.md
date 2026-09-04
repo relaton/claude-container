@@ -378,6 +378,24 @@ It asks before each of these, never uses `git worktree remove --force`, and keep
 still has uncommitted changes or unmerged commits. So nothing disappears without your say-so — and
 you can still do it by hand (`git worktree remove .claude/worktrees/<branch>`).
 
+**One limit under `cwl`.** Claude Code lists `.git/worktrees/` when the session starts, and it
+protects each entry from writes. A worktree that was already there therefore cannot be removed from
+inside that session. It takes the list again when the session moves into a worktree, so the session
+cannot drop that worktree either. The workflow tests for this first, so it keeps the worktree whole,
+and it **queues** the drop instead. `cwl` runs the queue in plain bash when the session ends, and it
+asks you once more on the terminal:
+
+```
+cwl: the session approved these worktree drops:
+  fix/ecma-fetcher  ->  .claude/worktrees/fix/ecma-fetcher
+cwl: remove them and their branches? [y/N]
+```
+
+Answer `n`, or press Enter, and nothing is removed. The launcher re-checks each entry itself before
+it asks — the path must sit in this repo's `.claude/worktrees/`, git must still list it as a
+worktree here, and the worktree must be clean — and it never uses `--force`. `cw` has no such limit,
+because the container has no sandbox.
+
 ## Updating Claude Code
 
 Claude Code is installed into the image (via npm), so updating it means rebuilding.

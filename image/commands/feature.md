@@ -92,6 +92,10 @@ branch behind, so they collect. Run the survey in the **main repo root**:
 - For each finished branch, decide **safe to drop**: `git -C <worktree> status --porcelain` is empty,
   **and** `git log --oneline <default-branch>..<branch>` shows no commit that the merge did not take.
   A dirty or ahead worktree is reported and kept, whatever the PR says.
+- Under `cwl` the sandbox refuses to delete a worktree that was already there when the session
+  started. Step 9 tests for this, keeps such a worktree whole, and queues the drop for the launcher
+  to run when the session ends. Say so in the report, so the user knows why a finished worktree
+  stays until then.
 - Report the result with the pending hand-offs. If anything is finished and safe, **GATE**: ask the
   user with `AskUserQuestion` which worktrees to drop, then run Step 9 on the approved ones before
   you continue with the plan.
@@ -242,7 +246,61 @@ are standing in. If the session entered the worktree with `EnterWorktree` (Step 
 leave it first with `ExitWorktree` and `action: "keep"`. Use **`keep`, never `remove`**:
 `ExitWorktree` does not remove a worktree entered by `path`, and `remove` would skip this gated
 procedure — the parent-branch update above, and the `gh`-evidence rule below. If the session only
-ran `cd` into the worktree, `cd` back out:
+ran `cd` into the worktree, `cd` back out.
+
+**Test the boundary before you remove.** Under `cwl` the sandbox blocks the removal of a worktree
+that existed when the session started. Claude Code reads `.git/worktrees/` at startup and denies
+every write to `commondir` in each worktree it finds there. The deny also covers the directory that
+holds the file, so git cannot delete the directory. The failure is not clean: git deletes a part of
+the checkout first, and then it stops with
+
+```
+error: failed to delete '.git/worktrees/<id>': Operation not permitted
+```
+
+Test first. Remove only after the test passes:
+
+```
+pwd                                                    # the session directory, before any cd
+admin="$(git -C .claude/worktrees/<branch> rev-parse --absolute-git-dir)"
+touch "$admin/commondir"                               # changes the mtime and nothing else
+```
+
+`pwd` must print the main repo root. The **session** directory decides a second deny: a session that
+still stands in the worktree cannot delete the worktree directory either. Only `ExitWorktree` moves
+the session out. A `cd` in a Bash command does not: each Bash call starts in the session directory
+again, and the sandbox reads that directory, not the shell. So `cd <repo> && git worktree remove ...`
+still fails with
+
+```
+error: failed to delete '<worktree>': Operation not permitted
+```
+
+If `touch` prints `Operation not permitted`, **remove nothing here**. Queue the drop instead. `cwl`
+runs the queue in bash when the session ends, outside the sandbox, and it asks the user again first:
+
+```
+printf '%s\t%s\t%s\n' "$(git rev-parse --show-toplevel)/.claude/worktrees/<branch>" \
+  "<branch>" merged >> "$CW_DROPS"
+```
+
+Write `merged` in the third field only when `gh` reported a non-null `mergedAt` for that branch.
+Write `unmerged` in every other case, the `git branch --merged` fallback included. The launcher
+escalates to `git branch -D` only on `merged`, and it keeps the branch otherwise — the same rule as
+below. Keep the branch here too, and tell the user that the drop is queued.
+
+`$CW_DROPS` is empty under `cw`, and in a plain `claude` session. Report the worktree then, and give
+the user this command for a terminal outside Claude Code:
+
+```
+git -C <repo> worktree remove .claude/worktrees/<branch> && git -C <repo> branch -d <branch>
+```
+
+`EnterWorktree` takes the list again when it moves the session. A worktree that this session entered
+is therefore blocked as well, and `ExitWorktree` does not release it. Step 2, Option 1 enters the
+worktree, so a `cwl` session cannot drop its own worktree either. Only a worktree that this session
+created and never entered passes the test. Under `cw` the test always passes, because the container
+has no sandbox.
 
 ```
 git worktree remove .claude/worktrees/<branch>     # never --force; if it refuses, stop and report

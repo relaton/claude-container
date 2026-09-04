@@ -72,6 +72,19 @@ command -v jq >/dev/null 2>&1 || die "jq not found (brew install jq)."
 export CW_HANDOFFS="${RIBOSE_ROOT}/HANDOFFS"
 mkdir -p "${CW_HANDOFFS}"
 
+# --- worktree drop queue -----------------------------------------------------
+# A cwl session cannot remove a worktree itself. Claude Code denies every write to
+# .git/worktrees/<id>/commondir for each worktree that exists when the session starts,
+# and it takes that list again when the session enters a worktree. Its sandbox also
+# denies unlink on each parent of a denied path, so `git worktree remove` fails with
+# "Operation not permitted". /feature therefore appends the drops the user approved to
+# this queue, and process_drops below runs them outside the sandbox, after a second
+# confirmation on the terminal. One line per drop:
+#   <worktree path> TAB <branch> TAB merged|unmerged
+# The third field carries the gh evidence, because only it may escalate to `branch -D`.
+export CW_DROPS="${CW_HANDOFFS}/drops/${org}__${repo}.tsv"
+mkdir -p "${CW_HANDOFFS}/drops"
+
 # --- GitHub auth -------------------------------------------------------------
 # The host keeps its gh token in the macOS keyring, not in a file, so materialise it.
 export GH_TOKEN="${GH_TOKEN:-$(gh auth token 2>/dev/null || true)}"
@@ -320,6 +333,73 @@ definition of one line at the first use.
 STE
 )"
 
+# --- run the queued worktree drops -------------------------------------------
+# This runs outside the sandbox, so it re-checks every claim the session made: the path
+# lies inside this repo's own worktree directory, git still registers it as a worktree
+# here, and the worktree is clean. `git worktree remove` never gets --force, so git
+# keeps its own veto as well. The queue is consumed on every run, answered or not — the
+# next session's Step 1 sweep finds anything that is still there.
+process_drops() {
+  [[ -s "${CW_DROPS}" ]] || { rm -f "${CW_DROPS}"; return 0; }
+
+  local wt=() br=() mg=() seen=""
+  local path branch state answer i
+  while IFS=$'\t' read -r path branch state || [[ -n "${path}" ]]; do
+    [[ -n "${path}" && -n "${branch}" ]] || continue
+    case "${seen}" in *"|${path}|"*) continue ;; esac
+    seen="${seen}|${path}|"
+    case "${path}" in
+      "${repo_path}/.claude/worktrees/"*) ;;
+      *) echo "cwl: skipped ${path} — outside ${repo_path}/.claude/worktrees" >&2; continue ;;
+    esac
+    git -C "${repo_path}" worktree list --porcelain 2>/dev/null \
+      | grep -qxF "worktree ${path}" \
+      || { echo "cwl: skipped ${branch} — git does not list it as a worktree here" >&2; continue; }
+    if [[ -n "$(git -C "${path}" status --porcelain 2>/dev/null)" ]]; then
+      echo "cwl: kept ${branch} — the worktree has uncommitted changes" >&2
+      continue
+    fi
+    wt+=("${path}"); br+=("${branch}"); mg+=("${state}")
+  done < "${CW_DROPS}"
+  rm -f "${CW_DROPS}"
+
+  [[ ${#wt[@]} -gt 0 ]] || return 0
+
+  echo >&2
+  echo "cwl: the session approved these worktree drops:" >&2
+  for ((i = 0; i < ${#wt[@]}; i++)); do
+    echo "  ${br[$i]}  ->  ${wt[$i]#"${repo_path}/"}" >&2
+  done
+  if [[ ! -r /dev/tty ]]; then
+    echo "cwl: no terminal to confirm on — nothing was removed." >&2
+    return 0
+  fi
+  answer=""
+  read -r -p "cwl: remove them and their branches? [y/N] " answer </dev/tty || true
+  case "${answer}" in
+    [Yy] | [Yy][Ee][Ss]) ;;
+    *) echo "cwl: nothing was removed." >&2; return 0 ;;
+  esac
+
+  for ((i = 0; i < ${#wt[@]}; i++)); do
+    if git -C "${repo_path}" worktree remove "${wt[$i]}"; then
+      if git -C "${repo_path}" branch -d "${br[$i]}" 2>/dev/null; then
+        echo "cwl: dropped ${br[$i]}" >&2
+      elif [[ "${mg[$i]}" == "merged" ]] && git -C "${repo_path}" branch -D "${br[$i]}"; then
+        # A squash merge writes a new commit, so `git branch -d` cannot see the merge.
+        # -D is allowed only on the gh evidence in field 3.
+        echo "cwl: dropped ${br[$i]} (squash-merged)" >&2
+      else
+        echo "cwl: removed the worktree, kept the branch ${br[$i]} — no merge evidence" >&2
+      fi
+    else
+      echo "cwl: kept ${wt[$i]} — git refused to remove it" >&2
+    fi
+  done
+  git -C "${repo_path}" worktree prune
+  rmdir "${repo_path}/.claude/worktrees/"*/ 2>/dev/null || true
+}
+
 # --- launch ------------------------------------------------------------------
 # Plan mode is a harness-level gate: Claude cannot edit until you approve a plan.
 # Unlike `cw` there is no --allow-dangerously-skip-permissions — the deny rules above
@@ -341,6 +421,7 @@ if [[ -n "${CWL_DRY_RUN:-}" ]]; then
   echo "cwl: cwd=${PWD}"
   echo "cwl: settings:"
   jq '.permissions.deny |= (.[0:3] + ["... \(length - 3) more"])' "${cfg}" | sed 's/^/  /'
+  echo "cwl: drops queue: ${CW_DROPS}"
   echo "cwl: launch: ${cmd[*]}"
   # Keep the generated settings so they can be inspected or reused for testing.
   trap - EXIT
@@ -348,4 +429,12 @@ if [[ -n "${CWL_DRY_RUN:-}" ]]; then
   exit 0
 fi
 
-exec "${cmd[@]}"
+# Finish the drops a previous session left behind, then start the session. The launcher
+# no longer uses `exec`: it must stay alive to run the queue after the session ends. The
+# EXIT trap therefore runs too, so the generated settings no longer leak.
+process_drops
+
+rc=0
+"${cmd[@]}" || rc=$?
+process_drops
+exit "${rc}"
