@@ -303,7 +303,9 @@ printf '%s\n' "${others[@]}" | jq -R . | jq -s \
           # ETSI and ITU publish the standards that the relaton work refers to.
           "www.etsi.org", "www.itu.int",
           # Crossref resolves the DOI metadata that relaton needs.
-          "api.crossref.org"
+          "api.crossref.org",
+          # The W3C API gives the specification metadata that relaton reads.
+          "api.w3.org"
         ] + $extra)
       }
     }
