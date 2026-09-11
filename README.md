@@ -207,6 +207,34 @@ extension compilation and git-sourced gems — and `rubygems.pkg.github.com` sta
 private metanorma gems. `gh run view --log-failed --job <id>` prints the job log rather than a
 network denial.
 
+#### Java
+
+Metanorma validates XML with Jing, a Java program that the `ruby-jing` gem starts. Two defects
+stop Java in the sandbox, so `cwl` writes a small env file and gives it to Claude Code as
+`CLAUDE_ENV_FILE`. Claude Code sources that file in the Bash shell before each command:
+
+```bash
+export JAVA_HOME=/Library/Java/JavaVirtualMachines/<jdk>/Contents/Home
+unset JAVA_TOOL_OPTIONS
+```
+
+- **`JAVA_HOME`.** The `/usr/bin/java` stub runs `java_home`, and `java_home` reads the sysctl
+  `kern.grade_cputype`. The sandbox profile does not allow that sysctl, so `java` fails with
+  `Unable to locate a Java Runtime`. With `JAVA_HOME` set, the stub does not run `java_home`.
+  `cwl` uses your `JAVA_HOME`, or it asks `/usr/libexec/java_home` on the host.
+- **`JAVA_TOOL_OPTIONS`.** The sandbox sets it to `-Djava.net.preferIPv4Stack=true`, so Java
+  writes `Picked up JAVA_TOOL_OPTIONS: ...` to stderr. `ruby-jing` raises on each stderr line
+  that it does not know, and metanorma then stops with `Jing failed with error`.
+
+Settings cannot unset a variable, which is why a file does this work. The shell that sources the
+file is inside the sandbox, and the session cannot write to the file.
+
+Java has no network in `cwl`. Java ignores `HTTPS_PROXY`, and the sandbox proxy needs Basic auth,
+which Java turns off for tunnels. `~/.m2` and `~/.gradle` are not in the read allowlist either, so
+Maven and Gradle builds fail.
+
+Verified in a session: Jing accepts a valid file and reports the error in an invalid one.
+
 #### The network allowlist
 
 Egress is deny-all. `cwl` opens four groups:

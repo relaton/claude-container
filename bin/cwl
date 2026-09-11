@@ -311,6 +311,28 @@ printf '%s\n' "${others[@]}" | jq -R . | jq -s \
     }
   }' > "${cfg}"
 
+# --- session environment -----------------------------------------------------
+# Claude Code sources CLAUDE_ENV_FILE in the Bash shell before each command. That shell
+# is inside the sandbox, so this file opens no unsandboxed channel. The session cannot
+# write to cfg_dir, so it cannot change the file.
+#
+# Two lines make Java work, and Jing (ruby-jing) with it:
+# - JAVA_HOME. The /usr/bin/java stub runs java_home, and java_home reads the sysctl
+#   kern.grade_cputype. The sandbox profile does not allow that sysctl, so the stub
+#   fails with "Unable to locate a Java Runtime". With JAVA_HOME set, the stub does not
+#   run java_home.
+# - unset JAVA_TOOL_OPTIONS. The sandbox sets it, so Java writes "Picked up
+#   JAVA_TOOL_OPTIONS: ..." to stderr. ruby-jing reads stderr and raises on each line
+#   that it does not know. The flag in the variable helps Java reach the sandbox proxy
+#   only, and that path fails anyway: the proxy answers 407.
+# Settings cannot unset a variable, and the sandbox sets this one after the settings env.
+env_file="${cfg_dir}/env.sh"
+java_home="${JAVA_HOME:-$(/usr/libexec/java_home 2>/dev/null || true)}"
+{
+  [[ -n "${java_home}" ]] && printf 'export JAVA_HOME=%q\n' "${java_home}"
+  echo 'unset JAVA_TOOL_OPTIONS'
+} > "${env_file}"
+
 # --- output style ------------------------------------------------------------
 # Appended to the system prompt so every session answers the same way: ASD-STE100
 # Simplified Technical English (the aerospace controlled-language standard — approved
@@ -409,7 +431,7 @@ process_drops() {
 # --add-dir makes the whole workspace readable, restoring the container's `/work:ro`
 # context. Writes are still confined: the sandbox limits Bash to the cwd, and the Edit
 # deny rules above cover the file tools.
-cmd=(claude --settings "${cfg}" --add-dir "${RIBOSE_ROOT}" --permission-mode plan --append-system-prompt "${style_prompt}")
+cmd=(env "CLAUDE_ENV_FILE=${env_file}" claude --settings "${cfg}" --add-dir "${RIBOSE_ROOT}" --permission-mode plan --append-system-prompt "${style_prompt}")
 [[ -n "$task" ]] && cmd+=("/feature ${task}")
 
 echo "cwl: project=${target}  (no container; writes confined to this repo plus ${CW_HANDOFFS})" >&2
@@ -423,6 +445,8 @@ if [[ -n "${CWL_DRY_RUN:-}" ]]; then
   echo "cwl: cwd=${PWD}"
   echo "cwl: settings:"
   jq '.permissions.deny |= (.[0:3] + ["... \(length - 3) more"])' "${cfg}" | sed 's/^/  /'
+  echo "cwl: env file:"
+  sed 's/^/  /' "${env_file}"
   echo "cwl: drops queue: ${CW_DROPS}"
   echo "cwl: launch: ${cmd[*]}"
   # Keep the generated settings so they can be inspected or reused for testing.

@@ -99,6 +99,13 @@ into `$TMPDIR`.
 and `/feature` moves the session into `.claude/worktrees/<branch>` with `EnterWorktree`. Git in a
 worktree still writes to `.git/worktrees/` in the main repo, so the repo path must stay explicit.
 
+**`cwl` gives the session an env file with `CLAUDE_ENV_FILE`.** Claude Code sources it in the
+sandboxed Bash shell before each command. It sets `JAVA_HOME` and unsets `JAVA_TOOL_OPTIONS`, and
+Jing needs both (see README, "Java"). Keep the file in `cfg_dir`, where the session cannot write.
+Do not set Java options with `JAVA_TOOL_OPTIONS` or `JDK_JAVA_OPTIONS`: Java prints a
+`Picked up` line for each one, and `ruby-jing` then fails. The file is not a hook, and it must
+stay that way: it runs inside the sandbox, not beside it.
+
 **The global `~/.claude/settings.json` is a separate boundary.** `cwl` passes its own allowlist, so
 a `cwl` session is unaffected by it. A plain `claude` session sees only the global file. A fix in
 `bin/cwl` does not reach plain sessions, and the reverse is also true.
