@@ -305,7 +305,9 @@ printf '%s\n' "${others[@]}" | jq -R . | jq -s \
           # Crossref resolves the DOI metadata that relaton needs.
           "api.crossref.org",
           # The W3C API gives the specification metadata that relaton reads.
-          "api.w3.org"
+          "api.w3.org",
+          # CEN and CENELEC publish the standards that the relaton work refers to.
+          "standards.cencenelec.eu"
         ] + $extra)
       }
     }
