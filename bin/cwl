@@ -307,7 +307,9 @@ printf '%s\n' "${others[@]}" | jq -R . | jq -s \
           # The W3C API gives the specification metadata that relaton reads.
           "api.w3.org",
           # CEN and CENELEC publish the standards that the relaton work refers to.
-          "standards.cencenelec.eu"
+          "standards.cencenelec.eu",
+          # OMG publishes the specifications that the relaton work refers to.
+          "omg.org", "*.omg.org"
         ] + $extra)
       }
     }
