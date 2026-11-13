@@ -238,6 +238,11 @@ printf '%s\n' "${others[@]}" | jq -R . | jq -s \
     model: "opus",
     includeCoAuthoredBy: false,
     env: {DISABLE_AUTOUPDATER: "1"},
+    # Claude Code 2.1.323 moved /diff into the built-in plugin cc-plugin-diff.
+    # That panel reads the cwd one time, when the session starts. /feature then
+    # enters the worktree, so the panel diffs the clean main checkout and is empty.
+    # With the plugin off, the old panel serves /diff, and it follows the cwd.
+    enabledPlugins: {"cc-plugin-diff@builtin": false},
     permissions: {
       # Deny beats allow, and these cover the tools the sandbox does not reach.
       # "//" marks an absolute rule, so the path follows without its leading slash.

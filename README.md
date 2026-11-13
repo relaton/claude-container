@@ -95,6 +95,16 @@ passed, so `/feature` isn't auto-invoked; run it yourself when you're ready.
 To review the work, run the **`/diff`** command in the session — it walks you through the pending
 changes so you can review them before deciding what to commit, merge, or open a PR for.
 
+Both launchers turn off the built-in plugin `cc-plugin-diff@builtin`. Claude Code 2.1.323 added
+it as the new `/diff` panel. That panel reads the cwd one time, when the session starts. `/feature`
+then moves the session into the worktree, so the panel shows the clean main checkout and is empty.
+With the plugin off, the old panel serves `/diff`, and it follows the cwd. A plain `claude`
+session needs the same key in `~/.claude/settings.json`:
+
+```json
+"enabledPlugins": { "cc-plugin-diff@builtin": false }
+```
+
 ### Output style
 
 Both launchers append the same instruction to the system prompt, so a session reads the same way

@@ -43,6 +43,13 @@ final, which is why `cwl` walks `/Users` and denies siblings one by one instead.
 **Never add `--allow-dangerously-skip-permissions` to `cwl`.** That flag skips the deny rules that
 form the file boundary. `cw` can use it because the mount namespace does the work.
 
+**Keep `cc-plugin-diff@builtin` off in both launchers.** Claude Code 2.1.323 moved `/diff` into
+that built-in plugin. The plugin reads the cwd one time, at `session.start`, and no later hook
+updates it. `/feature` enters the worktree after the start, so the plugin diffs the clean main
+checkout and shows an empty panel. With `enabledPlugins` set to `false`, the old panel serves
+`/diff`, and it reads the live cwd — tested in a real session. Set the key in the jq filter in
+`bin/cwl` and in `image/settings.json`. Turn the plugin on again only when it follows the cwd.
+
 **Edit the settings in the jq filter in `bin/cwl`** (around line 221). The launcher writes a
 per-session `settings.json` into a temp directory and passes it with `--settings`. Do not put
 launcher policy in `image/settings.json`; that file reaches `cw` only. The whole filter is one

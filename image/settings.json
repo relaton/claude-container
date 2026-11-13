@@ -2,6 +2,9 @@
   "model": "opus",
   "includeCoAuthoredBy": false,
   "cleanupPeriodDays": 30,
+  "enabledPlugins": {
+    "cc-plugin-diff@builtin": false
+  },
   "env": {
     "DISABLE_AUTOUPDATER": "1"
   }
