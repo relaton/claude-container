@@ -68,7 +68,7 @@ command -v jq >/dev/null 2>&1 || die "jq not found (brew install jq)."
 
 # --- shared hand-off inbox ---------------------------------------------------
 # Exported so image/commands/feature.md can name one path under both launchers
-# (/work/HANDOFFS in the container, the real host path here).
+# (/workspaces/HANDOFFS in the container, the real host path here).
 export CW_HANDOFFS="${RIBOSE_ROOT}/HANDOFFS"
 mkdir -p "${CW_HANDOFFS}"
 
@@ -90,7 +90,7 @@ mkdir -p "${CW_HANDOFFS}/drops"
 export GH_TOKEN="${GH_TOKEN:-$(gh auth token 2>/dev/null || true)}"
 [[ -z "${GH_TOKEN}" ]] && echo "cwl: warning — no GH_TOKEN (run 'gh auth login'); pushes will fail." >&2
 
-# Replicate entrypoint.sh's git setup WITHOUT writing to ~/.gitconfig: rewrite SSH
+# Replicate the container git setup WITHOUT writing to ~/.gitconfig: rewrite SSH
 # remotes to HTTPS and authenticate them with GH_TOKEN. This is what lets us deny
 # read access to ~/.ssh below while leaving fetch/push working, exactly as in the
 # container (which never had the host's SSH keys either). An empty first value resets
@@ -105,7 +105,7 @@ export GIT_CONFIG_KEY_2="credential.https://github.com.helper"
 export GIT_CONFIG_VALUE_2='!f() { echo username=x-access-token; echo password=$GH_TOKEN; }; f'
 
 # --- skip the folder-trust prompt for this repo ------------------------------
-# entrypoint.sh does this inside the container; it is needed on the host too, because
+# session-setup.sh does this inside the container; it is needed on the host too, because
 # trust is stored PER PROJECT DIRECTORY, so a repo you have never opened still prompts.
 # Onboarding is already done on the host, so only the per-project flag is set.
 claude_json="${HOME}/.claude.json"
@@ -126,7 +126,7 @@ if ! jq -e --arg dir "${repo_path}" \
 fi
 
 # --- read boundary -----------------------------------------------------------
-# The container got its read boundary for free: only /work was mounted, so nothing else
+# The container got its read boundary for free: only /workspaces was mounted, so nothing else
 # on the host existed. Here the process runs on the real filesystem, so the boundary has
 # to be stated. Everything under /Users and /Volumes is denied except the workspace and
 # the paths a session genuinely needs: the Ruby toolchain (asdf/rvm hold the interpreter
@@ -437,7 +437,7 @@ process_drops() {
 # Plan mode is a harness-level gate: Claude cannot edit until you approve a plan.
 # Unlike `cw` there is no --allow-dangerously-skip-permissions — the deny rules above
 # are the boundary for the file tools, and that flag would skip them.
-# --add-dir makes the whole workspace readable, restoring the container's `/work:ro`
+# --add-dir makes the whole workspace readable, restoring the container's `/workspaces:ro`
 # context. Writes are still confined: the sandbox limits Bash to the cwd, and the Edit
 # deny rules above cover the file tools.
 cmd=(env "CLAUDE_ENV_FILE=${env_file}" claude --settings "${cfg}" --add-dir "${RIBOSE_ROOT}" --permission-mode plan --append-system-prompt "${style_prompt}")

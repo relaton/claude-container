@@ -15,19 +15,20 @@ Claude never commits, pushes, merges, or opens a PR. It leaves the finished work
 changes** on the chosen branch/worktree and hands it back to you — you decide what to commit, merge,
 or open a PR for, in your own time.
 
-Writes are physically confined to the chosen repo: the whole `workspace/` tree is mounted
-**read-only** for context, and only the target repo is overlaid read-write (worktrees live
-inside it, under `.claude/worktrees/`).
+There are two launchers, with the same contract and the same workflow. They differ in one thing
+that matters: **only `cwl` confines writes to the chosen repo.**
 
-There are two launchers, with the same contract and the same workflow — they differ only in what
-enforces the boundary. `bin/cw` uses Docker (below). `bin/cwl` skips Docker entirely and runs
-Claude Code on the host inside Claude Code's own built-in sandbox — see
+- `bin/cw` runs the session inside the workspace devcontainer, which mounts the whole tree
+  read-write. It names a target repo and starts there, but nothing stops a write elsewhere.
+  Plan mode is the only gate.
+- `bin/cwl` skips Docker and runs Claude Code on the host inside Claude Code's own sandbox, which
+  does confine writes to the target repo — see
 [Running without Docker](#running-without-docker-cwl).
 
 If a change needs another project, the workflow never edits it — it writes a self-contained
 **hand-off prompt** to the shared inbox at `workspace/HANDOFFS/` (created by `cw`, alongside the
 org dirs), named `<org>__<repo>__<slug>.md` — e.g. `relaton__relaton-bib__add-http-retry.md`.
-Mounted at `/work/HANDOFFS`, this inbox is the only writable spot outside the target repo, and it
+Mounted at `/workspaces/HANDOFFS`, this inbox is the only writable spot outside the target repo, and it
 takes hand-off prompts only, never code. Next time you run `cw` in the repo a hand-off is addressed
 to, that session reads its pending hand-offs while planning and tells you about them — so there's
 nothing to copy around by hand. When the merged work implements a hand-off, that session offers to
@@ -42,27 +43,34 @@ cd workspace
 git clone https://github.com/relaton/claude-container.git
 
 cd claude-container
-docker compose build           # ruby 3.4 + node 20 + git + gh + java + Claude Code
-chmod +x bin/cw entrypoint.sh
+chmod +x bin/cw session-setup.sh
+
+# The image belongs to the workspace devcontainer, one level up:
+docker compose -f ../.devcontainer/docker-compose.yml build
+
+# Ruby and Claude Code live in the shared volumes, not in the image. Open the
+# workspace devcontainer in VS Code once, so its post-create.sh fills them. `cw`
+# stops with a message until it finds them.
 # optional: put bin/ on your PATH, e.g.
 #   export PATH="$PWD/bin:$PATH"
 ```
 
-### Authenticate Claude (once; persists in the `claude-home` volume)
+### Authenticate Claude (once; persists in the `claude-config` volume)
 
 On macOS, Claude Code's login lives in the **Keychain**, not in `~/.claude`, so it can't be
 bind-mounted into a Linux container. Do one of:
 
 ```bash
 # A) log in once inside the container (token persists in the named volume):
-docker compose run --rm dev claude login
+docker exec -it "$(docker compose -f ../.devcontainer/docker-compose.yml ps -q dev)" claude login
 
-# B) or set CLAUDE_CODE_OAUTH_TOKEN (from `claude setup-token`) or ANTHROPIC_API_KEY in .env
-cp .env.example .env && $EDITOR .env
+# B) or export CLAUDE_CODE_OAUTH_TOKEN (from `claude setup-token`) or ANTHROPIC_API_KEY
+#    in the shell you run `cw` from; `cw` forwards both.
 ```
 
-`gh` and git work via the mounted `~/.config/gh` and `~/.gitconfig`. For **pushing**, `cw` also
-passes the host's GitHub token (via `gh auth token`, so it works even when the host keeps it in
+A VS Code session in the same container shares this login.
+
+For **pushing**, `cw` passes the host's GitHub token (via `gh auth token`, so it works even when the host keeps it in
 the macOS keyring) as `GH_TOKEN`, and the container routes GitHub SSH remotes (`git@github.com:`)
 over HTTPS using that token — so `git push` works without SSH keys in the container. Private gems
 use the host's `BUNDLE_RUBYGEMS__PKG__GITHUB__COM`.
@@ -126,11 +134,15 @@ resolution logic.
 ### Raw equivalent (no wrapper)
 
 ```bash
-docker compose -f compose.yml run --rm \
-  -w /work/relaton/relaton-bib \
-  -v "$(cd ../relaton/relaton-bib && pwd)":/work/relaton/relaton-bib \
-  dev claude --permission-mode plan --allow-dangerously-skip-permissions "/feature add retry logic"
+docker exec -it -w /workspaces/relaton/relaton-bib \
+  -e GH_TOKEN -e CW_HANDOFFS=/workspaces/HANDOFFS \
+  "$(docker compose -f ../.devcontainer/docker-compose.yml ps -q dev)" \
+  /usr/local/bin/cw-session-setup \
+  claude --permission-mode plan --allow-dangerously-skip-permissions "/feature add retry logic"
 ```
+
+`bin/cw` also passes the git settings for the session (`GIT_CONFIG_COUNT` and friends), which the
+line above leaves out for brevity.
 
 ## Running without Docker (`cwl`)
 
@@ -157,7 +169,7 @@ nearly all the prompts came from anyway.
 
 It symlinks (not copies) `image/commands/feature.md` into `~/.claude/commands/` and
 `image/bin/mkworktree` into `~/.local/bin/`, so edits under `image/` take effect immediately —
-the same freshness the entrypoint's re-seed gives the container.
+the same freshness the session setup's re-seed gives the container.
 
 ### Use
 
@@ -175,19 +187,23 @@ file for inspection. `CWL_EXTRA_DOMAINS="host,*.example.com"` widens the network
 
 ### The boundary
 
-| | `cw` (Docker) | `cwl` (native sandbox) |
+| | `cw` (shared devcontainer) | `cwl` (native sandbox) |
 |---|---|---|
-| Writable | target repo, `HANDOFFS` | same, plus the gem caches bundler needs |
-| Readable | all of `workspace/` (`:ro`) | same, via `--add-dir`, plus the toolchain paths listed below; nothing else under `/Users` or `/Volumes` |
-| Bash confinement | mount namespace | Seatbelt, `failIfUnavailable: true` so it never silently degrades |
-| File-tool confinement | mount namespace (kernel) | `permissions.deny` rules (permission layer) |
+| Writable | **all of `workspace/`** | target repo, `HANDOFFS`, plus the gem caches bundler needs |
+| Readable | all of `workspace/` | same, via `--add-dir`, plus the toolchain paths listed below; nothing else under `/Users` or `/Volumes` |
+| Bash confinement | **none** | Seatbelt, `failIfUnavailable: true` so it never silently degrades |
+| File-tool confinement | **none** | `permissions.deny` rules (permission layer) |
 | Network | **unrestricted** | deny-all except an allowlist |
-| Toolchain | pinned in the image | the host's — so asdf gives each repo *its own* Ruby |
+| Toolchain | mise in the shared volume, so each repo gets the Ruby it pins | the host's — so asdf gives each repo *its own* Ruby |
+
+`cw` had a boundary until the two stacks were merged into one container. Sharing the devcontainer
+is what removed it: that container mounts the tree read-write for VS Code, and a `docker exec` into
+it inherits exactly that. Use `cwl` when the boundary is the point.
 
 #### The read allowlist
 
-Under `cw` the read boundary came for free: only `workspace/` was mounted, so nothing else on the
-host existed. `cwl` runs on the real filesystem, so `/Users` and `/Volumes` are denied wholesale and
+Under `cw` the read boundary comes for free: only `workspace/` is mounted into the container, so
+nothing else on the host exists there. `cwl` runs on the real filesystem, so `/Users` and `/Volumes` are denied wholesale and
 re-opened only for the workspace and the paths a session genuinely needs — the Ruby toolchain
 (`~/.asdf`, `~/.rvm`, `~/.gem`, `~/.gemrc`, `~/.bundle`, `~/.cache`, `~/.npm`), Claude Code's own
 binary and state (`~/.claude`, `~/.claude.json`, `~/.local/bin`, `~/.local/share/claude`,
@@ -288,10 +304,9 @@ carries.
 
 ### The honest caveat
 
-This is the one place `cwl` is weaker than the container. In `cw`, a write to another repo is
-impossible because the filesystem is mounted read-only. In `cwl`, a write by the **file tools** is
-blocked by a permission rule — strong in practice, but policy rather than physics, and it depends
-on the deny list being complete. The list is regenerated from the actual directory contents on
+In `cwl`, a write by the **file tools** is blocked by a permission rule — strong in practice, but
+policy rather than physics, and it depends on the deny list being complete. It is still the
+stronger of the two launchers: `cw` does not block that write at all. The list is regenerated from the actual directory contents on
 every launch, so a newly cloned repo is covered the next time you start a session.
 
 `sandbox.allowUnsandboxedCommands` is set to `false`, which closes the escape hatch that would
@@ -301,9 +316,8 @@ otherwise let a blocked Bash command be re-run outside the sandbox.
 
 `cwl` pre-accepts the folder-trust prompt for the target repo by setting
 `projects[<repo>].hasTrustDialogAccepted` in `~/.claude.json` before launching — the same thing
-`entrypoint.sh` does inside the container. Trust is stored **per project directory**, so a repo you
-have never opened before would otherwise prompt on every start. The container never hits this:
-`~/.claude` is a persisted named volume, so the decision was recorded on first use.
+`session-setup.sh` does inside the container. Trust is stored **per project directory**, so a repo
+you have never opened before would otherwise prompt on every start.
 
 Note this also silently accepts any permissions a repo pre-approves in its own
 `.claude/settings.local.json` — `relaton/support`, for example, pre-approves `Bash(gem which:*)`
@@ -326,14 +340,14 @@ receives no keystrokes at all. Giving it a private pty would work, except the sa
 
 ## How to organize your repos
 
-The container mounts the **parent** of `claude-container/` (the whole `workspace/` tree) read-only at
-`/work`, and `cw` derives the target from an `<org>/<repo>` layout. So put `claude-container/` and
+The devcontainer mounts the **parent** of `claude-container/` (the whole `workspace/` tree) at
+`/workspaces`, and `cw` derives the target from an `<org>/<repo>` layout. So put `claude-container/` and
 your project repos side by side under one root, with each repo two levels down as `<org>/<repo>`:
 
 ```text
-workspace/                       # ← mounted read-only at /work (cross-project context)
+workspace/                       # ← mounted read-write at /workspaces
 ├── claude-container/         # this tooling repo (a sibling, not a project to work on)
-├── HANDOFFS/                 # shared cross-project hand-off inbox (writable at /work/HANDOFFS)
+├── HANDOFFS/                 # shared cross-project hand-off inbox (writable at /workspaces/HANDOFFS)
 │   └── done/                 #   └─ archive for hand-offs that are implemented and merged
 ├── relaton/                  # <org>
 │   ├── relaton-bib/          #   └─ <repo>   → cw relaton/relaton-bib "..."
@@ -343,23 +357,23 @@ workspace/                       # ← mounted read-only at /work (cross-project
 ```
 
 - The root can have any name/location — `cw` finds it as the parent of `claude-container/`.
-- Each `<org>/<repo>` must be a **git repo** (`cw` checks for `.git`); only it is overlaid
-  read-write, with worktrees under its own `.claude/worktrees/`. Everything else stays read-only,
-  except the `HANDOFFS/` inbox, which `cw` creates and mounts read-write for hand-off prompts only.
+- Each `<org>/<repo>` must be a **git repo** (`cw` checks for `.git`). `cw` starts the session there
+  and worktrees go under its own `.claude/worktrees/`, but the rest of the tree is writable too —
+  see the boundary table above.
 - `claude-container` itself is reserved as the tooling dir, so it can't be a `cw` target.
 
 ## How it works
 
 | Piece | Role |
 |-------|------|
-| `Dockerfile` | ruby 3.4 + node 20 + git + gh + ripgrep + java (JRE for ruby-jing) + native-gem build deps + Claude Code; non-root `dev` user. |
-| `compose.yml` | mounts `workspace/` read-only at `/work`, the `HANDOFFS/` inbox read-write, host gh/git config, and a `claude-home` volume for login persistence. |
-| `bin/cw` | host launcher (Docker); resolves the target repo, adds the read-write overlay, and creates the hand-off inbox. |
+| `Dockerfile` | the **single** image for this launcher and for `../.devcontainer`: ubuntu 24.04 + git ≥ 2.48 + gh + ripgrep + jq + java (JRE for ruby-jing) + native-gem build deps + mise; non-root `vscode` user. Ruby and Claude Code live in the shared volumes, not in the image. |
+| `../.devcontainer/docker-compose.yml` | the only compose file: builds this directory, mounts `workspace/` at `/workspaces`, and owns the `home-local` and `claude-config` volumes. |
+| `bin/cw` | host launcher; resolves the target repo, starts the devcontainer if it is down, and `docker exec`s the session into it with per-session git settings. |
 | `bin/cwl` | host launcher (no Docker); same resolution, but generates per-session sandbox settings and file-tool deny rules. |
 | `bin/install-local` | one-time host setup for `cwl`: symlinks the skill and `mkworktree`, checks prerequisites. |
 | `image/commands/feature.md` | the `/feature` workflow skill (baked into the image). |
 | `image/settings.json` | container Claude defaults (model = opus). |
-| `entrypoint.sh` | sets `git safe.directory`, re-seeds the skill if the volume hid it. |
+| `session-setup.sh` | run by `cw` through `docker exec`: checks the Ruby install, re-seeds the skill if the volume hid it, pre-accepts folder trust. |
 
 ### Worktrees
 
@@ -381,12 +395,12 @@ changes the directory in its own process, so your terminal stays where you start
 session ends, Claude Code asks whether to **keep or remove** the worktree. Answer **keep**: the
 worktree and the branch are meant to survive, and the cleanup below is where they are dropped.
 
-**Host compatibility.** The container mounts the repo at `/work/...` but on the host it's at
+**Host compatibility.** The container mounts the repo at `/workspaces/...` but on the host it's at
 `/Users/.../workspace/...`. Git normally bakes an absolute path into a worktree's `.git` link, which
-would make host-side `git status` fail (`not a git repository: /work/...`). The container ships
+would make host-side `git status` fail (`not a git repository: /workspaces/...`). The container ships
 **git ≥ 2.48** and sets `worktree.useRelativePaths=true` globally, so `git worktree add` writes
 **relative** links for both the forward `.git` link and the repo-side backlink — they resolve
-whether the repo is seen at `/work/...` or `/Users/...`. Result: you can `git status`/diff/commit
+whether the repo is seen at `/workspaces/...` or `/Users/...`. Result: you can `git status`/diff/commit
 inside the worktree from **both** the container and the host, and even a bare `git worktree add`
 (not just the helper) stays host-reachable. The baked **`mkworktree`** helper
 (`image/bin/mkworktree`, on `PATH`) is still preferred — it just adds the convenience of a fixed
@@ -436,27 +450,47 @@ because the container has no sandbox.
 
 ## Updating Claude Code
 
-Claude Code is installed into the image (via npm), so updating it means rebuilding.
-The version is a build arg, `CLAUDE_CODE_VERSION`, defaulting to `latest`.
+Claude Code is **not** in the image. It lives in the shared `home-local` volume, installed by
+`../.devcontainer/post-create.sh`, so it updates itself in place and survives an image rebuild.
+`cw` and the devcontainer always run the same version.
 
-**Recommended — pin to a specific new version.** Changing the arg value busts the cache
-for just that layer, and gives you reproducible builds and easy rollback:
-
-```bash
-docker compose build --build-arg CLAUDE_CODE_VERSION=2.0.34
-```
-
-**Stay on `latest`.** Since the arg value doesn't change, Docker would reuse the cached
-layer and keep the old version — so force a clean rebuild:
+To force a version:
 
 ```bash
-docker compose build --no-cache
+docker run --rm -v ribose-dev_home-local:/home/vscode/.local ribose-workspace:latest \
+  npm install -g @anthropic-ai/claude-code@2.0.34 --prefix /home/vscode/.local
 ```
 
-(This also recompiles git from source, so it's slower; pinning a version is the quicker path.)
+Rebuilding the image changes only the system toolchain (git, gh, java, the build deps):
 
-The next `cw` run uses the rebuilt image automatically (each call is ephemeral `run --rm`).
-Your login is unaffected — it lives in the `claude-home` volume, not the image.
+```bash
+docker compose -f ../.devcontainer/docker-compose.yml build   # add --no-cache for a clean build
+```
+
+Then **Rebuild Container** in VS Code, so the running container picks the new image up. Your login
+is unaffected — it lives in the `claude-config` volume, not the image.
+
+## One container for `cw` and VS Code
+
+`Dockerfile` here is the only Dockerfile in the workspace, and
+`../.devcontainer/docker-compose.yml` is the only compose file. It builds this directory as
+`ribose-workspace:latest` and runs `sleep infinity`. VS Code attaches to that container, and `cw`
+runs `docker exec` into the same one. Ruby, the gems and Claude Code live in the
+`ribose-dev_home-local` volume, the login and history in `ribose-dev_claude-config`, so each
+installs once and both see the same versions.
+
+Four consequences to know about:
+
+- **`cw` has no write boundary.** The container mounts the tree read-write for VS Code, and an
+  `exec` into it inherits that. See the boundary table above.
+- **Nothing `cw` runs may write `~/.gitconfig`.** The dev containers extension owns that file: it
+  copies your host identity in and installs a credential helper that proxies to the host. `bin/cw`
+  sets its git configuration **per process** instead, with `GIT_CONFIG_COUNT`, so your VS Code
+  terminals keep theirs.
+- The image carries **no `ENTRYPOINT`**. The container runs `sleep infinity` on it, and an
+  entrypoint would wrap that command. `cw` runs `cw-session-setup` as the command of its `exec`.
+- A `bundle install` in a VS Code terminal and one in a `cw` session write the same `GEM_HOME`.
+  mise installs are idempotent, but two gem installs at the same time can race. Run one at a time.
 
 ## Notes & caveats
 
@@ -464,19 +498,21 @@ Your login is unaffected — it lives in the `claude-home` volume, not the image
   and have it approved before it can edit anything — a harness-level gate, not just an instruction.
   It's paired with `--allow-dangerously-skip-permissions` so that, once you approve the plan
   (choose "accept edits", or `Shift+Tab` to the bypass mode), implementation runs autonomously.
-  That bypass is acceptable here because the container + read-only mount are the isolation
-  boundary and writes are limited to the single target repo. The isolation-choice gate and the
-  "never commit/push/merge/PR — stop and hand back the diff" rule are enforced by the skill, not
-  the permission layer, so they rely on Claude following the workflow prompt.
+  Since `cw` moved into the shared devcontainer, **nothing backs that bypass up**: the container
+  mounts the whole tree read-write, so an approved plan can edit any repo. Plan mode is the gate.
+  The isolation-choice gate and the "never commit/push/merge/PR — stop and hand back the diff"
+  rule are enforced by the skill, not the permission layer, so they rely on Claude following the
+  workflow prompt. Use `cwl` when you want the boundary enforced.
 - `cwl` deliberately does **not** use that flag. Its file-tool boundary is the generated
   `permissions.deny` list, and `--allow-dangerously-skip-permissions` would skip it. Bash still
   runs without prompts, via `autoAllowBashIfSandboxed`, so in practice the two feel the same.
-- Most repos need Ruby ≥ 3.3 (image ships 3.4). A repo pinned to an older Ruby may need a
-  tweaked base image — or just use `cwl`, which picks up the repo's own asdf Ruby.
+- Ruby comes from mise in the shared volume, so a repo with a `.ruby-version` gets that version
+  if it is installed. `mise install` in the repo adds one. The global default is 3.4.
 - The network allowlist (both launchers' sandboxes) matches on the client-supplied hostname
   without inspecting TLS, so it is a guardrail against accidental egress, not a defence against
   deliberate exfiltration.
 - `cwl`'s deny list is regenerated from the workspace contents at every launch, so a repo cloned
   mid-session is not covered until the next start.
-- Each `cw` call is ephemeral (`run --rm`). Repos persist on the host mount; Claude login
-  persists in the `claude-home` volume. In-container bundles are not cached between runs.
+- Every `cw` call `exec`s into the same long-running container. Repos live on the host mount,
+  the login in the `claude-config` volume and the gems in `home-local`, so a bundle installed in
+  one session is there in the next one and in your VS Code terminals.

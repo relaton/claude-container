@@ -11,7 +11,7 @@
 # The container ships git >= 2.48, so we use NATIVE relative worktree links
 # (`git worktree add --relative-paths`): both the forward .git link and the
 # repo-side backlink are stored relative, so they resolve whether the repo is
-# seen at /work/... (container) or /Users/... (host). No path mismatch, no
+# seen at /workspaces/... (container) or /Users/... (host). No path mismatch, no
 # manual link surgery, and no assumption about how deep the worktree sits — git
 # computes the relative path. (The container's global config also sets
 # worktree.useRelativePaths=true, so a bare `git worktree add` is host-reachable

@@ -124,7 +124,7 @@ Let `<branch>` be the type-prefixed branch name from the plan (e.g. `feat/add-ht
   it's physically present on the host), names the branch, and adds a local exclude so the dir
   never shows as untracked. The container's git (≥2.48) writes **relative** worktree links — and
   the container sets `worktree.useRelativePaths=true` globally — so the worktree is readable from
-  both the container (`/work/...`) and the host (`/Users/...`):
+  both the container (`/workspaces/...`) and the host (`/Users/...`):
   ```
   mkworktree <branch>          # creates .claude/worktrees/<branch> on branch <branch>
   ```

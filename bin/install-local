@@ -3,9 +3,9 @@
 # install-local — one-time host setup for the no-Docker launcher (`cwl`).
 #
 # The container baked the slash command and the worktree helper into its image and
-# re-seeded them on every run (see entrypoint.sh). On the host they just need to be
+# re-seeded them on every run (see session-setup.sh). On the host they just need to be
 # on the usual paths. These are SYMLINKS, so edits under image/ take effect at once
-# and never go stale — the property entrypoint.sh's unconditional re-copy provided.
+# and never go stale — the property session-setup.sh's unconditional re-copy provided.
 
 set -euo pipefail
 

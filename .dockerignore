@@ -1,0 +1,5 @@
+# The devcontainer builds this same context, so keep it small and keep secrets out.
+.git
+.env
+README.md
+CLAUDE.md

@@ -6,17 +6,23 @@
 #   cd ribose/<org>/<repo> && cw ["task description"]   # derive repo from $PWD
 #   cw <org>/<repo> ["task description"]                 # explicit repo
 #
-# Everything under /work is read-only inside the container EXCEPT the target
-# repo, which is overlaid read-write below, and /work/HANDOFFS, the shared
-# cross-project hand-off inbox. Worktrees are created inside the target repo at
-# .claude/worktrees/<slug>, so all code writes stay confined to the single project.
+# The session runs inside the workspace devcontainer (../.devcontainer), through
+# `docker exec`. One container serves VS Code and every cw session, so Ruby, the
+# gems and Claude Code install once.
+#
+# THERE IS NO WRITE BOUNDARY. That container mounts the whole tree read-write at
+# /workspaces, so a session can write to any repo in the workspace. `cw` scopes the
+# session by convention only: it sets the working directory to the target repo and
+# tells the session to stay there. Plan mode is the one remaining gate. Use `cwl`
+# when you need writes confined to a single repo.
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-COMPOSE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"      # .../ribose/claude-container
-RIBOSE_ROOT="$(cd "${COMPOSE_DIR}/.." && pwd)"     # .../ribose
-COMPOSE_FILE="${COMPOSE_DIR}/compose.yml"
+REPO_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"         # .../ribose/claude-container
+RIBOSE_ROOT="$(cd "${REPO_DIR}/.." && pwd)"        # .../ribose
+COMPOSE_FILE="${RIBOSE_ROOT}/.devcontainer/docker-compose.yml"
+SERVICE="dev"
 
 die() { echo "cw: $*" >&2; exit 1; }
 
@@ -43,17 +49,75 @@ repo="${target#*/}"
 
 task="$*"
 
-# Cross-project hand-off inbox (mounted read-write at /work/HANDOFFS). It lives at the
-# workspace root so that /work/HANDOFFS exists inside the read-only /work mount — a bind
-# cannot create its own mountpoint there. Create it here so it is owned by the host user;
-# compose would otherwise create it root-owned and the container could not write to it.
+[[ -f "${COMPOSE_FILE}" ]] \
+  || die "no devcontainer at ${COMPOSE_FILE}."
+
+# The session needs that container running. Start it if VS Code has not. A container
+# that compose starts never runs post-create.sh, so it can lack Ruby and Claude Code;
+# cw-session-setup says so before the session begins.
+cid="$(docker compose -f "${COMPOSE_FILE}" ps -q "${SERVICE}" 2>/dev/null || true)"
+if [[ -z "${cid}" ]] || [[ "$(docker inspect -f '{{.State.Running}}' "${cid}" 2>/dev/null)" != "true" ]]; then
+  echo "cw: starting the workspace devcontainer..." >&2
+  docker compose -f "${COMPOSE_FILE}" up -d "${SERVICE}" >&2 \
+    || die "could not start the devcontainer."
+  cid="$(docker compose -f "${COMPOSE_FILE}" ps -q "${SERVICE}" 2>/dev/null || true)"
+fi
+[[ -n "${cid}" ]] || die "the devcontainer is not running."
+
+# Cross-project hand-off inbox. It lives at the workspace root, beside the org dirs,
+# so the container sees it at /workspaces/HANDOFFS. Create it here so it is owned by
+# the host user.
 mkdir -p "${RIBOSE_ROOT}/HANDOFFS"
 
-# GitHub auth for the container: the host stores its gh token in the macOS keyring
-# (not in the mounted ~/.config/gh), so pull it out and pass it as GH_TOKEN, which
-# compose forwards. The container's git is configured to use it for HTTPS pushes.
+# Optional auth fallbacks. Docker Compose used to load this file on its own; `cw` no
+# longer runs compose for the session, so read it here. Values already exported in the
+# shell win, which is what compose did too.
+env_file="${REPO_DIR}/.env"
+if [[ -f "${env_file}" ]]; then
+  while IFS= read -r line; do
+    [[ "$line" =~ ^[[:space:]]*# ]] && continue
+    [[ "$line" =~ ^[[:space:]]*$ ]] && continue
+    [[ "$line" =~ ^([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]] || continue
+    name="${BASH_REMATCH[1]}"
+    [[ -n "${!name-}" ]] || export "${name}=${BASH_REMATCH[2]}"
+  done < "${env_file}"
+fi
+
+# GitHub auth for the session: the host stores its gh token in the macOS keyring, not
+# in a file, so pull it out and hand it to `docker exec` as GH_TOKEN. The git settings
+# below use it for HTTPS pushes, and `gh` reads it directly.
 export GH_TOKEN="${GH_TOKEN:-$(gh auth token 2>/dev/null || true)}"
 [[ -z "${GH_TOKEN}" ]] && echo "cw: warning — no GH_TOKEN (run 'gh auth login'); pushes will fail." >&2
+
+# Git configuration for THIS session only, the same way bin/cwl does it. It must not
+# write ~/.gitconfig: the dev containers extension owns that file inside the shared
+# container — it copies the host identity in and installs a credential helper that
+# proxies to the host, and a VS Code terminal needs both. An empty first value resets
+# the inherited helper chain, so that proxy is not consulted from a docker exec.
+#   - url insteadOf  : the repos use SSH remotes but the container has no SSH key.
+#   - credential     : feed GH_TOKEN as the HTTPS password so `git push` works.
+#   - safe.directory : the mounted repos are owned by a foreign uid.
+#   - worktree       : store RELATIVE .git links (git 2.48+), so a worktree made at
+#                      /workspaces/... is also readable from the host at /Users/...
+git_cfg=(
+  "credential.helper="
+  "url.https://github.com/.insteadOf=git@github.com:"
+  'credential.https://github.com.helper=!f() { echo username=x-access-token; echo password=$GH_TOKEN; }; f'
+  "safe.directory=*"
+  "worktree.useRelativePaths=true"
+)
+# The identity too. The dev containers extension copies the host gitconfig into the
+# container, but only when VS Code opens it — a container that `cw` started itself has
+# none, and `git commit` then stops with "Please tell me who you are".
+for k in user.name user.email; do
+  v="$(git config --global --get "$k" 2>/dev/null || true)"
+  [[ -n "$v" ]] && git_cfg+=("${k}=${v}")
+done
+
+git_env=(-e "GIT_CONFIG_COUNT=${#git_cfg[@]}")
+for i in "${!git_cfg[@]}"; do
+  git_env+=(-e "GIT_CONFIG_KEY_${i}=${git_cfg[$i]%%=*}" -e "GIT_CONFIG_VALUE_${i}=${git_cfg[$i]#*=}")
+done
 
 # --- output style ------------------------------------------------------------
 # Appended to the system prompt so every session answers the same way: ASD-STE100
@@ -90,13 +154,26 @@ if [[ -n "$task" ]]; then
   cmd+=("/feature ${task}")
 fi
 
-echo "cw: project=${target}  (writes confined to this repo, incl. its .claude/worktrees, plus /work/HANDOFFS)" >&2
+# Pass through only the variables that are actually set. `docker exec -e VAR` with
+# an unset VAR would hand the session an empty value, and an empty TERM breaks the TUI.
+env_args=("${git_env[@]}" -e "CW_HANDOFFS=/workspaces/HANDOFFS")
+for v in GH_TOKEN BUNDLE_RUBYGEMS__PKG__GITHUB__COM ANTHROPIC_API_KEY CLAUDE_CODE_OAUTH_TOKEN \
+         TERM TERM_PROGRAM TERM_PROGRAM_VERSION LC_TERMINAL LC_TERMINAL_VERSION COLORTERM; do
+  [[ -n "${!v-}" ]] && env_args+=(-e "${v}=${!v}")
+done
+
+echo "cw: project=${target}  (in the shared devcontainer; the whole workspace is writable)" >&2
 [[ -n "$task" ]] && echo "cw: task=${task}" >&2
 
-# Only the target repo is mounted read-write. Worktrees live inside it at
-# .claude/worktrees/<slug>, so they need no separate mount — they ride the repo's
-# RW bind mount, which also keeps all writes physically confined to this project.
-exec docker compose -f "${COMPOSE_FILE}" run --rm \
-  -w "/work/${target}" \
-  -v "${RIBOSE_ROOT}/${target}:/work/${target}" \
-  dev "${cmd[@]}"
+# cw-session-setup re-seeds the skill, pre-accepts folder trust for the working dir,
+# and then execs the command below. The launcher does not `exec` docker itself, so a
+# future post-session step can still run here.
+# Allocate a TTY only when there is one. `docker exec -t` fails outright with
+# "stdin is not a terminal", which would make cw unusable from a pipe or a script.
+exec_args=(-i)
+[[ -t 0 && -t 1 ]] && exec_args+=(-t)
+
+docker exec "${exec_args[@]}" \
+  -w "/workspaces/${target}" \
+  "${env_args[@]}" \
+  "${cid}" /usr/local/bin/cw-session-setup "${cmd[@]}"

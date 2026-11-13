@@ -1,26 +1,30 @@
 # claude-container
 
 This repo holds two launchers. Each one starts Claude Code on **one** sibling project under
-`workspace/` and confines the session to that project. Read `README.md` first for the user-facing
+`workspace/`. Only `cwl` confines the session to that project; `cw` names it but no longer
+enforces it. Read `README.md` first for the user-facing
 contract. This file records the rules that are easy to break.
 
 ## Layout
 
 | Path | Role |
 |---|---|
-| `bin/cw` | Docker launcher. Boundary is the mount namespace. |
+| `bin/cw` | Docker launcher. Runs in the shared devcontainer. **No write boundary.** |
 | `bin/cwl` | Host launcher. Boundary is Claude Code's native sandbox plus permission rules. |
 | `bin/install-local` | Symlinks `image/` assets onto the host for `cwl`. |
-| `Dockerfile`, `compose.yml`, `entrypoint.sh` | The `cw` image and its startup. |
+| `Dockerfile`, `session-setup.sh` | The image, built by `../.devcontainer/docker-compose.yml`, and the per-session setup that `cw` execs. |
 | `image/settings.json` | Baked into the image. `cw` only. `cwl` does not read it. |
 | `image/commands/feature.md` | The `/feature` workflow. Both launchers use it. |
 
 `RIBOSE_ROOT` is the parent of this repo. Both launchers derive it the same way.
 
-## The two boundaries
+## The boundaries
 
-`cw` mounts `workspace/` read-only and overlays the target repo read-write. Writes are impossible
-elsewhere. Network egress is **unrestricted**.
+`cw` has **no write boundary any more**. It runs `docker exec` into the workspace devcontainer,
+which mounts the whole tree read-write at `/workspaces`, and it still passes
+`--allow-dangerously-skip-permissions`. A `cw` session can write to any repo in the workspace.
+Plan mode is the one gate left. Network egress is **unrestricted**. `cwl` is the launcher that
+still confines writes to one repo.
 
 `cwl` runs on the real filesystem, so it states the boundary in two layers:
 
@@ -40,8 +44,38 @@ final, which is why `cwl` walks `/Users` and denies siblings one by one instead.
 
 ## Rules
 
+**There is one container, and `cw` shares it.** `../.devcontainer/docker-compose.yml` is the only
+compose file left; it builds this directory as `ribose-workspace:latest` and runs `sleep infinity`.
+VS Code attaches to that container, and `bin/cw` runs `docker exec` into it. `claude-container` has
+no `compose.yml` of its own. That is what the user asked for, and it is what removed the boundary
+described above — do not present `cw` as confining anything.
+
+**Nothing `cw` runs may write shared container state.** The container outlives every session and
+serves VS Code at the same time. Two rules follow, and both are load-bearing:
+
+- **Never write `~/.gitconfig`.** The dev containers extension owns that file. It copies the host
+  identity in and installs a credential helper that proxies to the host, and a VS Code terminal
+  needs both. `bin/cw` sets its git configuration per process with `GIT_CONFIG_COUNT`, the same way
+  `bin/cwl` does. It also passes `user.name` and `user.email` from the host, because a container
+  that `cw` started itself never got the extension's copy.
+- **`session-setup.sh` must stay idempotent.** It re-seeds the skill, pre-accepts folder trust and
+  execs the session command. It is not an `ENTRYPOINT`: the image has none, because the devcontainer
+  runs `sleep infinity` on it and an `ENTRYPOINT` would wrap that command.
+
+**The image puts the mise SHIMS on `PATH`, not `mise activate`.** Claude Code runs non-interactive
+shells, so `~/.bashrc` never runs and an activated mise never reaches the Bash tool. The shims need
+no activation.
+
+**`cw` starts the container when VS Code has not.** `docker compose up -d` does **not** run
+`post-create.sh` — that is a devcontainer lifecycle hook, not a compose feature. Such a container
+can therefore lack Ruby and Claude Code, which live in the `home-local` volume. `session-setup.sh`
+tests for the Ruby install and stops with a message that names the fix.
+
 **Never add `--allow-dangerously-skip-permissions` to `cwl`.** That flag skips the deny rules that
-form the file boundary. `cw` can use it because the mount namespace does the work.
+form the file boundary. `cw` passes it, and nothing takes over the work any more — that is the
+price of the shared container. If `cw` ever needs a boundary back, give it a generated
+`--settings` file with `permissions.deny` rules for the sibling repos, the way `bin/cwl` builds
+one. Do not try to restore it with a read-only mount: there is no `cw` mount left to make.
 
 **Keep `cc-plugin-diff@builtin` off in both launchers.** Claude Code 2.1.323 moved `/diff` into
 that built-in plugin. The plugin reads the cwd one time, at `session.start`, and no later hook
